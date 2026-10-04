@@ -80,7 +80,19 @@ struct TextEditorSheet: View {
                         number("阴影模糊", \.shadowBlur, 0...500)
                         Divider()
                         color("背景颜色", \.backgroundColor)
-                        number("背景内边距", \.padding, 0...1000); number("背景圆角", \.cornerRadius, 0...1000)
+                        number("背景内边距", \.padding, 0...1000)
+                        Toggle("圆角背景", isOn: Binding(get: { text.cornerRadius > 0 }, set: { enabled in
+                            binding(\.cornerRadius).wrappedValue = enabled ? TextLayer.defaultBackgroundCornerRadius : 0
+                        }))
+                        if text.cornerRadius > 0 {
+                            number("圆角半径 px", \.cornerRadius, 0...1000)
+                            Slider(value: binding(\.cornerRadius), in: 0...max(48, text.cornerRadius), step: 1)
+                                .accessibilityLabel("背景圆角半径")
+                        }
+                        Button("恢复默认圆角（12 px）") {
+                            binding(\.cornerRadius).wrappedValue = TextLayer.defaultBackgroundCornerRadius
+                        }.controlSize(.small)
+                        Text("半径为 0 时使用直角；背景不透明时可见。圆角随文字缩放，并保存到项目。").font(.caption).foregroundStyle(.secondary)
                     }.padding(4)
                 }.frame(width: 320, height: 420)
             }

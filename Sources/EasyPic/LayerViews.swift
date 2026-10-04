@@ -7,6 +7,15 @@ struct LayerInspector: View {
         VStack(alignment: .leading, spacing: 10) {
             Button(action: model.importSticker) { Label("添加图片贴纸…", systemImage: "plus.square.on.square") }.buttonStyle(.glass)
             Button(action: model.addText) { Label("添加文字", systemImage: "textformat") }.buttonStyle(.glass)
+            Menu {
+                Button(model.mergeDownTitle) {
+                    if let id = model.selectedLayerID { model.mergeLayers(.down(id)) }
+                }.disabled(!model.canMergeDown)
+                Button("合并可见图层") { model.mergeLayers(.visible) }.disabled(!model.canMergeVisible)
+            } label: { Label("合并图层", systemImage: "square.stack.3d.up") }
+                .buttonStyle(.glass)
+                .disabled(!model.canMergeDown && !model.canMergeVisible)
+                .help("合并为图片，可撤销恢复文字和贴纸；合并可见图层保留隐藏图层与原图。")
             ScrollView {
                 VStack(spacing: 5) {
                     ForEach(Array((model.document?.layers ?? []).reversed())) { layer in

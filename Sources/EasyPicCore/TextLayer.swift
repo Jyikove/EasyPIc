@@ -14,6 +14,7 @@ public struct TextColor: Codable, Equatable {
 }
 public enum TextAlignment: String, Codable, CaseIterable { case left, center, right }
 public struct TextLayer: Codable, Equatable {
+    public static let defaultBackgroundCornerRadius: Double = 12
     public var content = "双击编辑文字"
     public var fontName = "PingFangSC-Regular"
     public var fontSize: Double = 48
@@ -28,7 +29,7 @@ public struct TextLayer: Codable, Equatable {
     public var shadowBlur: Double = 0
     public var backgroundColor = TextColor(0, 0, 0, 0)
     public var padding: Double = 8
-    public var cornerRadius: Double = 0
+    public var cornerRadius: Double = Self.defaultBackgroundCornerRadius
     public var letterSpacing: Double = 0
     public var lineSpacing: Double = 0
     public var vertical = false

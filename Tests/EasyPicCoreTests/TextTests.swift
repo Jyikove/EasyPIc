@@ -19,6 +19,7 @@ struct TextTests {
         return Array(UnsafeBufferPointer(start: context.data!.assumingMemoryBound(to: UInt8.self), count: image.width * image.height * 4))
     }
     func run() throws {
+        try testBackgroundCorners()
         var fitted = TextLayer(); fitted.content = "EasyPic"
         let short = fitted.naturalSize
         fitted.content = "EasyPic EasyPic"
@@ -60,5 +61,26 @@ struct TextTests {
         try expectEqual(bytes(try DocumentEngine.render(restored, resources: assets)), bytes(try DocumentEngine.render(doc, resources: resources)))
         var history = DocumentHistory(restored); var changed = restored; changed.layers[0].text?.content = "重新编辑"; history.apply(changed); history.undo(); try expectEqual(history.document, restored)
         print("PASS · 文字项目保存恢复、预览/导出一致与可继续编辑/撤销")
+    }
+
+    func testBackgroundCorners() throws {
+        var style = TextLayer(); style.content = ""; style.backgroundColor = TextColor(0.2, 0.4, 0.8)
+        try expectEqual(style.cornerRadius, 12)
+        let rounded = bytes(try render(style))
+        try expectEqual(rounded[3], 0)
+        try expectEqual(rounded[(130 * 360 + 180) * 4 + 3], 255)
+        style.cornerRadius = 0
+        try expectEqual(bytes(try render(style))[3], 255)
+        // A saved explicit radius of zero must remain square after the new default is introduced.
+        let old = try JSONDecoder().decode(TextLayer.self, from: JSONEncoder().encode(style))
+        try expectEqual(old.cornerRadius, 0)
+        style.cornerRadius = 40
+        let large = bytes(try render(style))
+        try expect(large[3] == 0 && large != rounded)
+        style.scale(by: 2); try expectEqual(style.cornerRadius, 80)
+        let restored = try JSONDecoder().decode(TextLayer.self, from: JSONEncoder().encode(style))
+        try expectEqual(restored.cornerRadius, 80)
+        try expectEqual(bytes(try render(restored)), bytes(try render(style)))
+        print("PASS · 文字背景默认圆角、可调半径/直角实际透明像素、缩放和旧项目圆角保留")
     }
 }

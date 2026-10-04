@@ -73,9 +73,10 @@ struct CheckRunner {
         try await Task.detached { try await LivePhotoTests().testMotionPhotos() }.value
         try await LivePhotoTests().testPlayback()
         try DocumentTests().run()
+        try LayerMergeTests().run()
         try TextTests().run()
         try BrushTests().run()
         try await AIJobTests().run()
-        print("\(cases.count + 24) 项验证通过")
+        print("\(cases.count + 28) 项验证通过")
     }
 }

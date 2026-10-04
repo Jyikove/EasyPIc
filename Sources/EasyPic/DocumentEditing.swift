@@ -3,6 +3,32 @@ import UniformTypeIdentifiers
 import EasyPicCore
 
 extension EditorModel {
+    var canMergeDown: Bool {
+        guard canUseLayers, !brushMode, let doc = document,
+              let i = doc.layers.firstIndex(where: { $0.id == selectedLayerID }), doc.layers[i].visible else { return false }
+        return i == 0 || doc.layers[i - 1].visible
+    }
+    var mergeDownTitle: String {
+        document?.layers.first?.id == selectedLayerID ? "与原图合并" : "向下合并"
+    }
+    var canMergeVisible: Bool {
+        canUseLayers && !brushMode && (document?.layers.filter(\.visible).count ?? 0) >= 2
+    }
+    func mergeLayers(_ mode: LayerMergeMode) {
+        guard canUseLayers, !brushMode, let doc = document else { return }
+        let assets = resources
+        busy = true
+        Task {
+            do {
+                let merged = try await Task.detached(priority: .userInitiated) {
+                    try DocumentEngine.merge(doc, resources: assets, mode: mode)
+                }.value
+                resources[merged.resourceID] = merged.image
+                selectedLayerID = merged.document.activeLayerID
+                commitDocument(merged.document)
+            } catch { self.error = error.localizedDescription; busy = false }
+        }
+    }
     func importSticker() {
         guard canUseLayers else { return }
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.image]
