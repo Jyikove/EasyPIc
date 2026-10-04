@@ -6,13 +6,51 @@ import AVFoundation
 
 @MainActor
 final class EditorModel: ObservableObject {
+    @Published var documentHistory: DocumentHistory?
+    @Published var selectedLayerID: UUID?
+    @Published var aiSheet = false
+    @Published var aiSelecting = false
+    @Published var aiRunning = false
+    @Published var aiPrompt = ""
+    @Published var cliPath = UserDefaults.standard.string(forKey: "codexPath") ?? "/opt/homebrew/bin/codex" { didSet { UserDefaults.standard.set(cliPath, forKey: "codexPath") } }
+    @Published var aiMessage = "输入需要修改的内容。"
+    @Published var aiReference: CGImage?
+    @Published var aiInput: CGImage?
+    @Published var aiResult: CGImage?
+    @Published var aiSelection: CGRect?
+    var aiRunner: CLIProcess?
+    var aiTask: Task<Void, Never>?
+    var aiJobDirectory: URL?
+    @Published var brushTarget = "base"
+    @Published var inspectorTab = "layers"
+    @Published var brushMode = false
+    @Published var brushTool: BrushTool = .solid
+    @Published var brushSize = 40.0
+    @Published var brushHardness = 1.0
+    @Published var brushOpacity = 1.0
+    @Published var brushStrength = 16.0
+    @Published var brushColor = TextColor(0,0,0)
+    @Published var brushRectangle = false
+    @Published var brushPoints: [CGPoint] = []
+    @Published var cloneSource: CGPoint?
+    @Published var textEditing = false
+    @Published var draftLayer: StickerLayer?
+    @Published var documentPreview: CGImage?
+    var resources: [UUID: CGImage] = [:]
+    var baseImage: CGImage?
+    var savedDocument: EditorDocument?
+    var projectURL: URL?
+    var previewTask: Task<Void, Never>?
+    var document: EditorDocument? { documentHistory?.document }
+    var selectedLayer: StickerLayer? { draftLayer ?? document?.layers.first { $0.id == selectedLayerID } }
+    var canUseLayers: Bool { canTransform }
     @Published var image: CGImage?
     @Published var fileURL: URL?
-    @Published var history = EditHistory()
     @Published var busy = false
     @Published var error: String?
     @Published var status = "本地编辑 · 保留原图"
     @Published var zoom: Double = 1
+    @Published var viewportReset = UUID()
     @Published var actualSize = false
     @Published var cropping = false
     @Published var cropRect: CGRect?
@@ -21,30 +59,29 @@ final class EditorModel: ObservableObject {
     @Published var exportFormat: ExportFormat = .png
     @Published var jpegQuality = 0.92
     @Published var browsingFiles: [URL] = []
-    @Published private(set) var mediaInfo: ImageMediaInfo?
-    @Published private(set) var livePhoto: LivePhotoAsset?
-    @Published private(set) var liveHistory = LivePhotoHistory()
-    @Published private(set) var missingLivePair = false
+    @Published var mediaInfo: ImageMediaInfo?
+    @Published var livePhoto: LivePhotoAsset?
+    @Published var liveHistory = LivePhotoHistory()
+    @Published var missingLivePair = false
     let playback = ImagePlayback()
     let livePlayback = LivePhotoPlayback()
-    private var exportedLiveEdits = LivePhotoEdits()
-    private var original: CGImage?
-    private var exportedOperations: [EditOperation] = []
-    private var pendingAfterExport: (() -> Void)?
+    var exportedLiveEdits = LivePhotoEdits()
+    var original: CGImage?
+    var pendingAfterExport: (() -> Void)?
     var isReadOnly: Bool { missingLivePair || mediaInfo?.isReadOnly == true }
-    var dirty: Bool { !isReadOnly && image != nil && (livePhoto != nil ? liveHistory.edits != exportedLiveEdits : history.operations != exportedOperations) }
-    var canUndo: Bool { livePhoto != nil ? liveHistory.canUndo : history.canUndo }
-    var canRedo: Bool { livePhoto != nil ? liveHistory.canRedo : history.canRedo }
+    var dirty: Bool { !isReadOnly && image != nil && (livePhoto != nil ? liveHistory.edits != exportedLiveEdits : document != savedDocument) }
+    var canUndo: Bool { livePhoto != nil ? liveHistory.canUndo : documentHistory?.canUndo == true }
+    var canRedo: Bool { livePhoto != nil ? liveHistory.canRedo : documentHistory?.canRedo == true }
     var canTransform: Bool { canEdit && livePhoto == nil }
     var dimensions: String { image.map { "\($0.width) × \($0.height)" } ?? "" }
-    var canBrowse: Bool { !busy && !cropping && !exportSheet && !choosingExportLocation }
+    var canBrowse: Bool { !busy && !cropping && !exportSheet && !choosingExportLocation && !textEditing && !aiSheet && !aiSelecting }
     var canEdit: Bool { image != nil && !isReadOnly && canBrowse }
     var currentIndex: Int? { fileURL.flatMap { browsingFiles.firstIndex(of: $0) } }
 
     func openPanel() {
-        guard !busy, !exportSheet, !choosingExportLocation else { return }
+        guard !busy, !exportSheet, !choosingExportLocation, !textEditing, !aiSheet, !aiSelecting else { return }
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.image, .quickTimeMovie]
+        panel.allowedContentTypes = [.image, .quickTimeMovie, UTType(importedAs: "local.jyikove.easypic.project")]
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.message = "选择图片、Live Photo 配套 MOV，或文件夹。Live Photo 原片和视频需在同一文件夹。"
@@ -52,13 +89,14 @@ final class EditorModel: ObservableObject {
     }
 
     func open(_ url: URL) {
-        guard !busy, !exportSheet, !choosingExportLocation else { return }
+        guard !busy, !exportSheet, !choosingExportLocation, !textEditing, !aiSheet, !aiSelecting else { return }
         guard url.isFileURL else { error = "请打开本机图片文件。"; return }
         guard !cropping else { error = "请先应用或取消当前裁剪。"; return }
         requestLeave { [weak self] in self?.load(url) }
     }
 
     private func load(_ input: URL) {
+        if input.pathExtension.lowercased() == "easypic" { loadProject(input); return }
         busy = true
         Task {
             do {
@@ -82,13 +120,16 @@ final class EditorModel: ObservableObject {
                 missingLivePair = missing
                 liveHistory = LivePhotoHistory()
                 exportedLiveEdits = LivePhotoEdits()
+                cancelBrush(); previewTask?.cancel(); draftLayer = nil; selectedLayerID = nil; projectURL = nil
+                let id = UUID()
+                let doc = EditorDocument(baseResourceID: id, size: CGSize(width: loaded.image.width, height: loaded.image.height))
+                resources = [id: loaded.image]; documentHistory = DocumentHistory(doc); savedDocument = doc
+                baseImage = loaded.image; documentPreview = loaded.image
                 original = loaded.image
                 image = loaded.image
                 mediaInfo = loaded.mediaInfo
                 fileURL = target
                 browsingFiles = siblings
-                history = EditHistory()
-                exportedOperations = []
                 zoom = 1
                 actualSize = false
                 cropRect = nil
@@ -131,40 +172,23 @@ final class EditorModel: ObservableObject {
 
     func apply(_ operation: EditOperation) {
         guard canTransform else { return }
-        var next = history
-        next.apply(operation)
-        render(next)
+        guard var doc = document else { return }
+        do { try doc.apply(operation); commitDocument(doc) } catch { self.error = error.localizedDescription }
     }
 
     func undo() {
         guard canEdit, canUndo else { return }
         if livePhoto != nil { var next = liveHistory; next.undo(); renderLive(next); return }
-        var next = history; next.undo(); render(next)
+        guard var next = documentHistory else { return }; next.undo(); renderDocument(next)
     }
 
     func redo() {
         guard canEdit, canRedo else { return }
         if livePhoto != nil { var next = liveHistory; next.redo(); renderLive(next); return }
-        var next = history; next.redo(); render(next)
+        guard var next = documentHistory else { return }; next.redo(); renderDocument(next)
     }
 
-    private func render(_ next: EditHistory) {
-        guard let original else { return }
-        busy = true
-        Task {
-            do {
-                image = try await Task.detached(priority: .userInitiated) {
-                    try ImageEngine.render(original, operations: next.operations)
-                }.value
-                history = next
-                cropRect = nil
-                status = "本地编辑 · 保留原图"
-            } catch { self.error = error.localizedDescription }
-            busy = false
-        }
-    }
-
-    func beginCrop() { guard canEdit else { return }; livePlayback.showCover(); cropping = true; cropRect = nil; zoom = 1; actualSize = false }
+    func beginCrop() { guard canEdit else { return }; cancelBrush(); livePlayback.showCover(); cropping = true; cropRect = nil; zoom = 1; actualSize = false }
     func cancelCrop() { cropping = false; cropRect = nil }
     func commitCrop() {
         guard let cropRect, cropRect.width >= 1, cropRect.height >= 1 else { return }
@@ -217,7 +241,7 @@ final class EditorModel: ObservableObject {
         cropRect = CGRect(x: floor((w - width) / 2), y: floor((h - height) / 2), width: floor(width), height: floor(height))
     }
 
-    func resetZoom() { zoom = 1; actualSize = false }
+    func resetZoom() { zoom = 1; actualSize = false; viewportReset = UUID() }
     func showExport() { guard canEdit else { return }; exportSheet = true }
 
     func export() {
@@ -244,15 +268,16 @@ final class EditorModel: ObservableObject {
         guard url.resolvingSymlinksInPath().standardizedFileURL != fileURL.resolvingSymlinksInPath().standardizedFileURL else {
             error = "请使用新的文件名导出，以保留原图。"; return
         }
-        let format = exportFormat, quality = jpegQuality, snapshot = history.operations
+        let format = exportFormat, quality = jpegQuality, snapshot = document, assets = resources
         busy = true
         Task {
             do {
                 try await Task.detached(priority: .userInitiated) {
-                    let data = try ImageEngine.encode(image, format: format, quality: quality)
+                    let result = try snapshot.map { try DocumentEngine.render($0, resources: assets) } ?? image
+                    let data = try ImageEngine.encode(result, format: format, quality: quality)
                     try data.write(to: url, options: .atomic)
                 }.value
-                exportedOperations = snapshot
+                savedDocument = snapshot
                 status = "已导出 · " + url.lastPathComponent
                 exportSheet = false
                 busy = false
@@ -301,13 +326,13 @@ final class EditorModel: ObservableObject {
         guard !busy else { return }
         guard dirty else { continuation(); return }
         let alert = NSAlert()
-        alert.messageText = "当前图片还有未导出的修改"
-        alert.informativeText = "导出后继续，或放弃本次修改。原始图片始终保留。"
-        alert.addButton(withTitle: "导出后继续")
+        alert.messageText = "当前图片还有未保存的修改"
+        alert.informativeText = "保存项目后可继续编辑；也可以导出图片或放弃修改。"
+        alert.addButton(withTitle: canUseLayers ? "保存项目后继续" : "导出后继续")
         alert.addButton(withTitle: "放弃修改")
         alert.addButton(withTitle: "取消")
         switch alert.runModal() {
-        case .alertFirstButtonReturn: pendingAfterExport = continuation; exportSheet = true
+        case .alertFirstButtonReturn: pendingAfterExport = continuation; if canUseLayers { saveProject() } else { exportSheet = true }
         case .alertSecondButtonReturn: continuation()
         default: break
         }

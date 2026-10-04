@@ -33,13 +33,18 @@ struct EasyPicApp: App {
                 Button("打开图片或文件夹…", action: model.openPanel).keyboardShortcut("o")
             }
             CommandGroup(replacing: .saveItem) {
-                Button("导出图片…", action: model.showExport).keyboardShortcut("s").disabled(!model.canEdit)
+                Button("保存可编辑项目…", action: model.saveProject).keyboardShortcut("s").disabled(!model.canUseLayers)
+                Button("导出图片…", action: model.showExport).keyboardShortcut("s", modifiers: [.command, .shift]).disabled(!model.canEdit)
             }
             CommandGroup(replacing: .undoRedo) {
                 Button("撤销", action: model.undo).keyboardShortcut("z").disabled(!model.canEdit || !model.canUndo)
                 Button("重做", action: model.redo).keyboardShortcut("z", modifiers: [.command, .shift]).disabled(!model.canEdit || !model.canRedo)
             }
             CommandMenu("图片") {
+                Button("AI 改图…",action:model.openAI).disabled(!model.canUseLayers)
+                Button("本地画笔…",action:model.beginBrush).disabled(!model.canUseLayers)
+                Button("添加文字", action: model.addText).disabled(!model.canUseLayers)
+                Button("添加图片贴纸…", action: model.importSticker).disabled(!model.canUseLayers)
                 Button("向右旋转 90°") { model.apply(.clockwise) }.keyboardShortcut("r").disabled(!model.canTransform)
                 Button("向左旋转 90°") { model.apply(.counterclockwise) }.keyboardShortcut("r", modifiers: [.command, .shift]).disabled(!model.canTransform)
                 Button("水平镜像") { model.apply(.mirrorHorizontal) }.disabled(!model.canTransform)
@@ -80,14 +85,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if allowTermination { return .terminateNow }
         guard let model else { return .terminateNow }
-        guard !model.busy, !model.exportSheet, !model.choosingExportLocation else { NSSound.beep(); return .terminateCancel }
+        guard !model.busy, !model.exportSheet, !model.choosingExportLocation, !model.textEditing, !model.aiSheet, !model.aiSelecting else { NSSound.beep(); return .terminateCancel }
         guard model.dirty else { return .terminateNow }
         model.requestLeave { [weak self] in self?.allowTermination = true; NSApp.terminate(nil) }
         return .terminateCancel
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard let model else { return true }
-        guard !model.busy, !model.exportSheet, !model.choosingExportLocation else { NSSound.beep(); return false }
+        guard !model.busy, !model.exportSheet, !model.choosingExportLocation, !model.textEditing, !model.aiSheet, !model.aiSelecting else { NSSound.beep(); return false }
         guard model.dirty else { return true }
         model.requestLeave { [weak self] in self?.allowTermination = true; NSApp.terminate(nil) }
         return false

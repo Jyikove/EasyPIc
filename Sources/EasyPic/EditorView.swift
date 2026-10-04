@@ -17,6 +17,7 @@ struct EditorView: View {
                 canvas
                 if model.image != nil {
                     if model.livePhoto != nil && !model.cropping { LivePhotoInspector(model: model, playback: model.livePlayback) }
+                    else if model.brushMode { BrushInspector(model: model) }
                     else if model.isReadOnly { ReadOnlyInspector(model: model, playback: model.playback) }
                     else { inspector }
                 }
@@ -35,13 +36,17 @@ struct EditorView: View {
         }
         .background(WindowBridge(delegate: delegate))
         .preferredColorScheme(.dark)
-        .tint(.clear)
+        .tint(accent)
         .onDrop(of: [.fileURL], isTargeted: $dropTarget) { providers in
             guard let provider = providers.first, !model.busy else { return false }
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
                 if let url { Task { @MainActor in model.open(url) } }
             }
             return true
+        }
+        .sheet(isPresented: $model.aiSheet) { AIEditorSheet(model:model) }
+        .sheet(isPresented: $model.textEditing) {
+            if let layer = model.selectedLayer { TextEditorSheet(model: model, layer: layer) }
         }
         .sheet(isPresented: $model.exportSheet, onDismiss: model.cancelExport) {
             if model.livePhoto != nil { LivePhotoExportView(model: model) }
@@ -62,10 +67,11 @@ struct EditorView: View {
             Spacer()
             if let url = model.fileURL {
                 Text(url.lastPathComponent).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
-                if model.dirty { Circle().fill(accent).frame(width: 5, height: 5).help("有未导出的修改") }
+                if model.dirty { Circle().fill(accent).frame(width: 5, height: 5).help("有未保存的修改") }
             }
             Spacer()
-            Button(action: model.openPanel) { Label("打开", systemImage: "folder") }.buttonStyle(.glass).disabled(model.busy || model.cropping)
+            Button(action: model.openPanel) { Label("打开", systemImage: "folder") }.buttonStyle(.glass).disabled(model.busy || model.cropping || model.textEditing || model.aiSheet || model.aiSelecting)
+            Button("保存项目", action: model.saveProject).buttonStyle(.glass).disabled(!model.canUseLayers)
             Button(action: model.showExport) { Label("导出", systemImage: "square.and.arrow.up") }.buttonStyle(.glassProminent).tint(accent).disabled(!model.canEdit)
         }
         .controlSize(.large)
@@ -99,8 +105,9 @@ struct EditorView: View {
     }
 
     private var inspector: some View {
+        ScrollView {
         VStack(alignment: .leading, spacing: 22) {
-            HStack { Text(model.cropping ? "裁剪图片" : "基础编辑").font(.system(size: 14, weight: .semibold)); Spacer(); Image(systemName: model.cropping ? "crop" : "slider.horizontal.3").foregroundStyle(accent) }
+            HStack { Text(model.cropping ? "裁剪图片" : "编辑工具").font(.system(size: 14, weight: .semibold)); Spacer(); Image(systemName: model.cropping ? "crop" : "slider.horizontal.3").foregroundStyle(accent) }
             if model.cropping {
                 Text("在图片上拖出选区。再次拖动可以重新选择范围。").font(.system(size: 12)).foregroundStyle(.secondary)
                 VStack(spacing: 10) {
@@ -112,36 +119,38 @@ struct EditorView: View {
                 Button(action: model.commitCrop) { Label("应用裁剪", systemImage: "checkmark") }.buttonStyle(.glassProminent).tint(accent).disabled(model.cropRect == nil || model.busy)
                 Button("取消", action: model.cancelCrop).buttonStyle(.glass).keyboardShortcut(.escape, modifiers: [])
             } else {
-                VStack(alignment: .leading, spacing: 12) {
-                    caption("构图")
-                    Button(action: model.beginCrop) { Label("裁剪图片", systemImage: "crop").frame(maxWidth: .infinity, alignment: .leading) }.buttonStyle(.glass)
-                }
-                VStack(alignment: .leading, spacing: 12) {
+                Picker("工具面板",selection:$model.inspectorTab) {
+                    Text("图层").tag("layers"); Text("构图").tag("compose"); Text("更多").tag("more")
+                }.pickerStyle(.segmented).labelsHidden()
+                if model.inspectorTab == "layers" {
+                    LayerInspector(model:model)
+                } else if model.inspectorTab == "compose" {
+                    Button(action:model.beginCrop) { Label("裁剪图片",systemImage:"crop") }.buttonStyle(.glass)
                     caption("旋转")
                     HStack {
-                        editButton("左转", "rotate.left") { model.apply(.counterclockwise) }
-                        editButton("右转", "rotate.right") { model.apply(.clockwise) }
+                        editButton("左转","rotate.left") { model.apply(.counterclockwise) }
+                        editButton("右转","rotate.right") { model.apply(.clockwise) }
                     }
-                }
-                VStack(alignment: .leading, spacing: 12) {
                     caption("镜像")
                     HStack {
-                        editButton("水平", "arrow.left.and.right.righttriangle.left.righttriangle.right") { model.apply(.mirrorHorizontal) }
-                        editButton("垂直", "arrow.up.and.down.righttriangle.up.righttriangle.down") { model.apply(.mirrorVertical) }
+                        editButton("水平","arrow.left.and.right.righttriangle.left.righttriangle.right") { model.apply(.mirrorHorizontal) }
+                        editButton("垂直","arrow.up.and.down.righttriangle.up.righttriangle.down") { model.apply(.mirrorVertical) }
                     }
+                    Text("裁剪与整图变换会同步作用于全部图层。").font(.caption).foregroundStyle(.secondary)
+                } else {
+                Button(action:model.beginBrush) { Label("擦除、消除与马赛克",systemImage:"paintbrush.pointed") }.buttonStyle(.glass)
+                    Button(action:model.openAI) { Label("AI 改图",systemImage:"sparkles") }.buttonStyle(.glass)
+                    Text("本地画笔无需联网。AI 改图使用本机 Codex 的模型与登录配置。").font(.caption).foregroundStyle(.secondary)
                 }
-                Divider().opacity(0.4)
-                VStack(alignment: .leading, spacing: 12) {
-                    caption("图片信息")
-                    Text(model.dimensions + " px").font(.system(size: 13, design: .monospaced))
-                    Text(model.fileURL?.pathExtension.uppercased() ?? "").font(.system(size: 11)).foregroundStyle(.secondary)
-                }
+                Divider()
+                Text(model.dimensions + " px").font(.system(size:12,design:.monospaced))
             }
             Spacer(minLength: 0)
             Label("原图始终保留", systemImage: "lock.shield").font(.system(size: 11)).foregroundStyle(.secondary)
         }
-        .padding(22)
-        .frame(width: 200)
+        .padding(16)
+        }
+        .frame(width: 280)
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22))
         .disabled(model.busy)
     }
@@ -167,8 +176,8 @@ struct EditorView: View {
             Spacer(minLength: 0)
             if model.image != nil {
                 HStack(spacing: 18) {
-                    Button(action: model.undo) { Image(systemName: "arrow.uturn.backward") }.disabled(!model.canEdit || !model.canUndo).help("撤销 ⌘Z")
-                    Button(action: model.redo) { Image(systemName: "arrow.uturn.forward") }.disabled(!model.canEdit || !model.canRedo).help("重做 ⇧⌘Z")
+                    Button(action: model.undo) { Image(systemName: "arrow.uturn.backward") }.accessibilityLabel("撤销").disabled(!model.canEdit || !model.canUndo).help("撤销 ⌘Z")
+                    Button(action: model.redo) { Image(systemName: "arrow.uturn.forward") }.accessibilityLabel("重做").disabled(!model.canEdit || !model.canRedo).help("重做 ⇧⌘Z")
                     Divider().frame(height: 16)
                     Button { model.zoom = max(0.1, model.zoom / 1.25) } label: { Image(systemName: "minus") }.disabled(model.cropping)
                     Button(action: model.resetZoom) { Text(model.actualSize ? "\(Int(model.zoom * 100))%" : "适应 \(Int(model.zoom * 100))%").font(.system(size: 11, design: .monospaced)) }.help("点击适应窗口 ⌘0")
@@ -183,7 +192,7 @@ struct ImageCanvas: View {
     @ObservedObject var model: EditorModel
     let image: CGImage
     @State private var start: CGPoint?
-    @State private var gestureZoom: Double?
+    @State private var panOffset: CGSize = .zero
 
     var body: some View {
         GeometryReader { geometry in
@@ -192,7 +201,7 @@ struct ImageCanvas: View {
             let base = model.actualSize ? 1 / (NSScreen.main?.backingScaleFactor ?? 2) : fit
             let scale = base * model.zoom
             let size = CGSize(width: Double(image.width) * scale, height: Double(image.height) * scale)
-            ScrollView([.horizontal, .vertical]) {
+            ZStack {
                 ZStack(alignment: .topLeading) {
                     checkerboard(size: size)
                     if model.livePhoto != nil {
@@ -200,20 +209,35 @@ struct ImageCanvas: View {
                     } else if model.mediaInfo?.animation != nil {
                         AnimatedFrameView(playback: model.playback, poster: image).frame(width: size.width, height: size.height)
                     } else {
-                        Image(decorative: image, scale: 1).resizable().interpolation(.high).frame(width: size.width, height: size.height)
+                        Image(decorative: model.documentPreview ?? image, scale: 1).resizable().interpolation(.high).frame(width: size.width, height: size.height)
                     }
-                    if model.cropping { cropOverlay(size: size, scale: scale) }
+                    if model.aiSelecting { AISelectionOverlay(model:model,scale:scale,size:size) }
+                    else if model.cropping { cropOverlay(size: size, scale: scale) }
+                    else if model.brushMode { BrushOverlay(model:model,scale:scale,size:size) }
+                    else if model.livePhoto == nil && !model.isReadOnly { LayerCanvasOverlay(model: model, scale: scale, size: size) }
                 }
                 .frame(width: size.width, height: size.height)
+                .offset(panOffset)
                 .shadow(color: .black.opacity(0.3), radius: 22, y: 10)
-                .padding(28)
-                .frame(minWidth: geometry.size.width, minHeight: geometry.size.height)
+                .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
             }
-            .simultaneousGesture(MagnifyGesture().onChanged { value in
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .background(CanvasInputBridge { event, point in
                 guard !model.cropping else { return }
-                if gestureZoom == nil { gestureZoom = model.zoom }
-                model.zoom = min(8, max(0.1, (gestureZoom ?? 1) * value.magnification))
-            }.onEnded { _ in gestureZoom = nil })
+                if event.type == .scrollWheel {
+                    panOffset.width += event.scrollingDeltaX
+                    panOffset.height += event.scrollingDeltaY
+                } else {
+                    let next = min(8, max(0.1, model.zoom * (1 + event.magnification)))
+                    let ratio = next / model.zoom
+                    panOffset = CGSize(width: (panOffset.width + geometry.size.width / 2 - point.x) * ratio + point.x - geometry.size.width / 2,
+                                       height: (panOffset.height + geometry.size.height / 2 - point.y) * ratio + point.y - geometry.size.height / 2)
+                    model.zoom = next
+                }
+            })
+            .clipped()
+            .onChange(of: model.fileURL) { _, _ in panOffset = .zero }
+            .onChange(of: model.viewportReset) { _, _ in panOffset = .zero }
         }
     }
 

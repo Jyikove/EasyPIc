@@ -48,6 +48,9 @@ struct CheckRunner {
             print("已生成 build/LivePhotoFixtures")
             return
         }
+        if let index = CommandLine.arguments.firstIndex(of: "--ai-smoke"), CommandLine.arguments.indices.contains(index + 1) {
+            try await AIJobTests.smoke(directory: URL(fileURLWithPath: CommandLine.arguments[index+1]), selected: CommandLine.arguments.contains("--selected")); return
+        }
         let tests = ImageEngineTests()
         let cases: [(String, () throws -> Void)] = [
             ("顺时针像素方向", tests.testClockwisePixels),
@@ -69,6 +72,10 @@ struct CheckRunner {
         try await Task.detached { try await LivePhotoTests().run() }.value
         try await Task.detached { try await LivePhotoTests().testMotionPhotos() }.value
         try await LivePhotoTests().testPlayback()
-        print("\(cases.count + 10) 项验证通过")
+        try DocumentTests().run()
+        try TextTests().run()
+        try BrushTests().run()
+        try await AIJobTests().run()
+        print("\(cases.count + 24) 项验证通过")
     }
 }

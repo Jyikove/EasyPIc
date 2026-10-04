@@ -16,7 +16,7 @@ public enum ImageFailure: LocalizedError {
 }
 
 /// Crop coordinates use image pixels, with the origin at the top left.
-public enum EditOperation: Equatable, Sendable {
+public enum EditOperation: Codable, Equatable, Sendable {
     case clockwise, counterclockwise, mirrorHorizontal, mirrorVertical
     case crop(CGRect)
 }

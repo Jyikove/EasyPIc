@@ -6,8 +6,8 @@
     <key>CFBundleExecutable</key><string>EasyPic</string>
     <key>CFBundleIconFile</key><string>EasyPicIcon.icns</string>
     <key>CFBundleIdentifier</key><string>local.jyikove.easypic</string>
-    <key>CFBundleVersion</key><string>3</string>
-    <key>CFBundleShortVersionString</key><string>0.1.2</string>
+    <key>CFBundleVersion</key><string>5</string>
+    <key>CFBundleShortVersionString</key><string>0.6.0</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>LSMinimumSystemVersion</key><string>26.0</string>
     <key>NSHighResolutionCapable</key><true/>
@@ -16,5 +16,16 @@
         <key>CFBundleTypeRole</key><string>Editor</string>
         <key>LSHandlerRank</key><string>Alternate</string>
         <key>LSItemContentTypes</key><array><string>public.image</string><string>com.apple.quicktime-movie</string></array>
+    </dict><dict>
+        <key>CFBundleTypeName</key><string>EasyPic 项目</string>
+        <key>CFBundleTypeRole</key><string>Editor</string>
+        <key>LSItemContentTypes</key><array><string>local.jyikove.easypic.project</string></array>
+        <key>LSTypeIsPackage</key><true/>
+    </dict></array>
+    <key>UTExportedTypeDeclarations</key><array><dict>
+        <key>UTTypeIdentifier</key><string>local.jyikove.easypic.project</string>
+        <key>UTTypeDescription</key><string>EasyPic 可编辑项目</string>
+        <key>UTTypeConformsTo</key><array><string>com.apple.package</string></array>
+        <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>easypic</string></array></dict>
     </dict></array>
 </dict></plist>
