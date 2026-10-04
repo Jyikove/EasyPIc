@@ -23,6 +23,10 @@ func expectThrows(_ operation: () throws -> Void) throws {
 @main
 struct CheckRunner {
     @MainActor static func main() async throws {
+        if CommandLine.arguments.contains("--viewer-checks") {
+            try await Task.detached { try ViewerToolsTests().run() }.value
+            print("4 项查看工具验证通过"); return
+        }
         if let index = CommandLine.arguments.firstIndex(of: "--inspect-live"), CommandLine.arguments.indices.contains(index + 1) {
             var url = URL(fileURLWithPath: CommandLine.arguments[index + 1])
             if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
@@ -77,6 +81,7 @@ struct CheckRunner {
         try TextTests().run()
         try BrushTests().run()
         try await AIJobTests().run()
-        print("\(cases.count + 28) 项验证通过")
+        try await Task.detached { try ViewerToolsTests().run() }.value
+        print("\(cases.count + 32) 项验证通过")
     }
 }

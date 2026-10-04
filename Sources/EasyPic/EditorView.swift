@@ -8,14 +8,18 @@ private let accent = Color(red: 0.93, green: 0.73, blue: 0.43)
 struct EditorView: View {
     @ObservedObject var model: EditorModel
     let delegate: AppDelegate
+    @Environment(\.openWindow) private var openWindow
     @State private var dropTarget = false
 
     var body: some View {
-        VStack(spacing: 16) {
-            header
-            HStack(spacing: 16) {
-                canvas
-                if model.image != nil {
+        HStack(spacing: 12) {
+            canvas
+            if model.image != nil {
+                if model.sidePanel == .thumbnails {
+                    FolderPreviewPanel(model: model)
+                } else if model.sidePanel == .text {
+                    TextRecognitionPanel(model: model)
+                } else if model.sidePanel == .edit {
                     if model.livePhoto != nil && !model.cropping { LivePhotoInspector(model: model, playback: model.livePlayback) }
                     else if model.brushMode { BrushInspector(model: model) }
                     else if model.isReadOnly { ReadOnlyInspector(model: model, playback: model.playback) }
@@ -23,9 +27,28 @@ struct EditorView: View {
                 }
             }
         }
-        .padding(20)
-        .padding(.top, 8)
+        .padding(12)
         .frame(minWidth: 850, minHeight: 600)
+        .toolbar {
+            ToolbarItemGroup(placement: .navigation) {
+                toolbarButton("上一张", "chevron.left", disabled: !model.canNavigatePrevious) { model.navigate(-1) }
+                toolbarButton("下一张", "chevron.right", disabled: !model.canNavigateNext) { model.navigate(1) }
+                toolbarButton("预览", "square.grid.2x2", disabled: model.image == nil || !model.canSwitchPanel, selected: model.sidePanel == .thumbnails) { model.togglePanel(.thumbnails) }
+                toolbarButton("提取文本", "text.viewfinder", disabled: model.image == nil || !model.canSwitchPanel, selected: model.sidePanel == .text) { model.togglePanel(.text) }
+                toolbarButton("逆时针旋转 90°", "rotate.left", disabled: !model.canTransform || model.brushMode) { model.apply(.counterclockwise) }
+                toolbarButton("编辑", "slider.horizontal.3", disabled: !model.canEdit, selected: model.sidePanel == .edit) { model.togglePanel(.edit) }
+            }
+        }
+        .toolbar(removing: .title)
+        .onAppear {
+            let action = openWindow
+            delegate.showEditor = { action(id: "editor") }
+        }
+        .onChange(of: model.document) { _, _ in model.recognizeText() }
+        .onChange(of: model.liveHistory.edits) { _, _ in model.recognizeText() }
+        .onChange(of: model.fileURL) { _, _ in model.recognizeText() }
+        .onChange(of: model.cropping) { _, cropping in if cropping { model.sidePanel = .edit } }
+        .onChange(of: model.brushMode) { _, painting in if painting { model.sidePanel = .edit } }
         .background {
             ZStack {
                 WindowMaterial()
@@ -39,7 +62,7 @@ struct EditorView: View {
         .onDrop(of: [.fileURL], isTargeted: $dropTarget) { providers in
             guard let provider = providers.first, !model.busy else { return false }
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                if let url { Task { @MainActor in model.open(url) } }
+                if let url { Task { @MainActor in model.open(url, viewingOnly: true) } }
             }
             return true
         }
@@ -56,18 +79,11 @@ struct EditorView: View {
         } message: { Text(model.error ?? "") }
     }
 
-    private var header: some View {
-        HStack(spacing: 14) {
-            Spacer()
-            Button(action: model.openPanel) { Label("打开", systemImage: "folder") }.buttonStyle(.glass).disabled(model.busy || model.cropping || model.textEditing || model.aiSheet || model.aiSelecting)
-            if model.dirty {
-                Circle().fill(accent).frame(width: 5, height: 5)
-                    .help("有未保存的修改").accessibilityLabel("有未保存的修改")
-            }
-            Button("保存项目", action: model.saveProject).buttonStyle(.glass).disabled(!model.canUseLayers)
-            Button(action: model.showExport) { Label("导出", systemImage: "square.and.arrow.up") }.buttonStyle(.glassProminent).tint(accent).disabled(!model.canEdit)
-        }
-        .controlSize(.large)
+    private func toolbarButton(_ title: String, _ icon: String, disabled: Bool, selected: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) { Label(title, systemImage: icon) }
+            .labelStyle(.iconOnly).help(title).accessibilityLabel(title)
+            .foregroundStyle(selected ? accent : .primary)
+            .disabled(disabled)
     }
 
     private var canvas: some View {
@@ -76,13 +92,10 @@ struct EditorView: View {
             if let image = model.image {
                 ImageCanvas(model: model, image: image)
             } else {
-                VStack(spacing: 22) {
+                VStack(spacing: 18) {
                     Image(systemName: "photo.on.rectangle.angled")
-                        .font(.system(size: 62, weight: .ultraLight)).foregroundStyle(accent.opacity(0.9))
-                        .padding(26).glassEffect(.regular, in: RoundedRectangle(cornerRadius: 32))
-                    Text("拖入图片开始，或打开整个文件夹浏览").font(.system(size: 13)).foregroundStyle(.secondary)
+                        .font(.system(size: 48, weight: .ultraLight)).foregroundStyle(.tertiary)
                     Button("打开图片", action: model.openPanel).buttonStyle(.glassProminent).tint(accent).controlSize(.large)
-                    Text("JPG · PNG · HEIC · TIFF · WebP · GIF 动图").font(.system(size: 10)).tracking(1).foregroundStyle(.tertiary)
                 }
             }
             if model.busy {
@@ -121,11 +134,6 @@ struct EditorView: View {
                             LayerInspector(model:model)
                         } else if model.inspectorTab == "compose" {
                             Button(action:model.beginCrop) { Label("裁剪图片",systemImage:"crop") }.buttonStyle(.glass)
-                            caption("旋转")
-                            HStack {
-                                editButton("左转","rotate.left") { model.apply(.counterclockwise) }
-                                editButton("右转","rotate.right") { model.apply(.clockwise) }
-                            }
                             caption("镜像")
                             HStack {
                                 editButton("水平","arrow.left.and.right.righttriangle.left.righttriangle.right") { model.apply(.mirrorHorizontal) }
@@ -141,6 +149,7 @@ struct EditorView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            EditFileControls(model: model)
         }
         .padding(16)
         .frame(width: 280)
@@ -174,6 +183,20 @@ struct EditHistoryControls: View {
     }
 }
 
+struct EditFileControls: View {
+    @ObservedObject var model: EditorModel
+    var body: some View {
+        HStack {
+            if model.livePhoto == nil {
+                Button("保存项目", action: model.saveProject).disabled(!model.canUseLayers)
+            }
+            Spacer(minLength: 0)
+            Button("导出", action: model.showExport).disabled(!model.canEdit)
+        }
+        .buttonStyle(.glass).controlSize(.small)
+    }
+}
+
 struct ImageCanvas: View {
     @ObservedObject var model: EditorModel
     let image: CGImage
@@ -200,7 +223,7 @@ struct ImageCanvas: View {
                     if model.aiSelecting { AISelectionOverlay(model:model,scale:scale,size:size) }
                     else if model.cropping { cropOverlay(size: size, scale: scale) }
                     else if model.brushMode { BrushOverlay(model:model,scale:scale,size:size) }
-                    else if model.livePhoto == nil && !model.isReadOnly { LayerCanvasOverlay(model: model, scale: scale, size: size) }
+                    else if model.sidePanel == .edit && model.livePhoto == nil && !model.isReadOnly { LayerCanvasOverlay(model: model, scale: scale, size: size) }
                 }
                 .frame(width: size.width, height: size.height)
                 .offset(panOffset)
@@ -362,6 +385,7 @@ struct LivePhotoInspector: View {
             Button(action: model.beginCrop) { Label("裁剪 Live Photo", systemImage: "crop") }.buttonStyle(.glass)
             if let error = playback.error { Text(error).font(.caption).foregroundStyle(.red) }
             Spacer(minLength: 0)
+            EditFileControls(model: model)
         }
         .padding(22).frame(width: 200)
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22))

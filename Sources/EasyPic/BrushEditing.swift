@@ -4,7 +4,7 @@ import EasyPicCore
 
 extension EditorModel {
     func beginBrush() {
-        guard canUseLayers else { return }; brushTarget = "base"; brushMode = true; brushPoints = []; cloneSource = nil
+        guard canUseLayers else { return }; sidePanel = .edit; brushTarget = "base"; brushMode = true; brushPoints = []; cloneSource = nil
     }
     func cancelBrush() { brushMode = false; brushPoints = []; cloneSource = nil }
     func commitBrush(_ points: [CGPoint]) {

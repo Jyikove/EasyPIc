@@ -23,6 +23,13 @@ final class EditorModel: ObservableObject {
     var aiJobDirectory: URL?
     @Published var brushTarget = "base"
     @Published var inspectorTab = "layers"
+    @Published var sidePanel: ViewerPanel?
+    @Published var recognizedText = ""
+    @Published var recognizingText = false
+    @Published var recognitionError: String?
+    var recognitionTask: Task<Void, Never>?
+    var recognitionID = UUID()
+    var recognitionSource: CGImage?
     @Published var brushMode = false
     @Published var brushTool: BrushTool = .solid
     @Published var brushSize = 40.0
@@ -46,7 +53,13 @@ final class EditorModel: ObservableObject {
     var canUseLayers: Bool { canTransform }
     @Published var image: CGImage?
     @Published var fileURL: URL?
-    @Published var busy = false
+    @Published var busy = false {
+        didSet {
+            guard busy != oldValue else { return }
+            if busy { clearRecognition() }
+            else { recognizeText() }
+        }
+    }
     @Published var error: String?
     @Published var status = "本地编辑 · 保留原图"
     @Published var zoom: Double = 1
@@ -56,6 +69,7 @@ final class EditorModel: ObservableObject {
     @Published var cropRect: CGRect?
     @Published var exportSheet = false
     @Published var choosingExportLocation = false
+    @Published var choosingOpenLocation = false
     @Published var exportFormat: ExportFormat = .png
     @Published var jpegQuality = 0.92
     @Published var browsingFiles: [URL] = []
@@ -74,25 +88,35 @@ final class EditorModel: ObservableObject {
     var canRedo: Bool { livePhoto != nil ? liveHistory.canRedo : documentHistory?.canRedo == true }
     var canTransform: Bool { canEdit && livePhoto == nil }
     var dimensions: String { image.map { "\($0.width) × \($0.height)" } ?? "" }
-    var canBrowse: Bool { !busy && !cropping && !exportSheet && !choosingExportLocation && !textEditing && !aiSheet && !aiSelecting }
+    var canBrowse: Bool { !busy && !cropping && !exportSheet && !choosingExportLocation && !choosingOpenLocation && !textEditing && !aiSheet && !aiSelecting }
     var canEdit: Bool { image != nil && !isReadOnly && canBrowse }
     var currentIndex: Int? { fileURL.flatMap { browsingFiles.firstIndex(of: $0) } }
 
     func openPanel() {
-        guard !busy, !exportSheet, !choosingExportLocation, !textEditing, !aiSheet, !aiSelecting else { return }
+        guard canBrowse else { return }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image, .quickTimeMovie, UTType(importedAs: "local.jyikove.easypic.project")]
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.message = "选择图片、Live Photo 配套 MOV，或文件夹。Live Photo 原片和视频需在同一文件夹。"
-        if panel.runModal() == .OK, let url = panel.url { open(url) }
+        choosingOpenLocation = true
+        panel.begin { [weak self] response in
+            guard let self else { return }
+            self.choosingOpenLocation = false
+            if response == .OK, let url = panel.url { self.open(url, viewingOnly: true) }
+        }
     }
 
-    func open(_ url: URL) {
-        guard !busy, !exportSheet, !choosingExportLocation, !textEditing, !aiSheet, !aiSelecting else { return }
+    func open(_ url: URL, viewingOnly: Bool = false) {
+        guard !busy, !exportSheet, !choosingExportLocation, !choosingOpenLocation, !textEditing, !aiSheet, !aiSelecting else { return }
         guard url.isFileURL else { error = "请打开本机图片文件。"; return }
         guard !cropping else { error = "请先应用或取消当前裁剪。"; return }
-        requestLeave { [weak self] in self?.load(url) }
+        requestLeave { [weak self] in
+            guard let self else { return }
+            if viewingOnly { self.sidePanel = nil }
+            self.clearRecognition()
+            self.load(url)
+        }
     }
 
     private func load(_ input: URL) {

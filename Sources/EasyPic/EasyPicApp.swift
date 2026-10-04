@@ -11,14 +11,15 @@ struct EasyPicApp: App {
             EditorView(model: model, delegate: delegate)
                 .onAppear {
                     delegate.model = model
-                    if let url = delegate.pendingURL { delegate.pendingURL = nil; model.open(url) }
+                    if let url = delegate.pendingURL { delegate.pendingURL = nil; model.open(url, viewingOnly: true) }
                     else if model.mediaInfo?.animation != nil { model.playback.play() }
                 }
                 .onDisappear { model.playback.pause(); model.livePlayback.pause() }
-                .onOpenURL { model.open($0) }
+                .onOpenURL { model.open($0, viewingOnly: true) }
         }
         .defaultSize(width: 1180, height: 800)
         .windowStyle(.hiddenTitleBar)
+        .windowToolbarStyle(.unifiedCompact)
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("关于 EasyPic") {
@@ -57,6 +58,15 @@ struct EasyPicApp: App {
                 Divider()
                 Button("上一张") { model.navigate(-1) }.keyboardShortcut(.leftArrow, modifiers: []).disabled(!model.canBrowse)
                 Button("下一张") { model.navigate(1) }.keyboardShortcut(.rightArrow, modifiers: []).disabled(!model.canBrowse)
+                Divider()
+                Button("播放 / 暂停") {
+                    if model.livePhoto != nil { model.livePlayback.toggle() }
+                    else { model.playback.toggle() }
+                }.disabled(!model.canBrowse || (model.livePhoto == nil && model.mediaInfo?.animation == nil))
+                Button("从头播放") {
+                    if model.livePhoto != nil { model.livePlayback.restart() }
+                    else { model.playback.restart() }
+                }.disabled(!model.canBrowse || (model.livePhoto == nil && model.mediaInfo?.animation == nil))
             }
         }
     }
@@ -66,6 +76,7 @@ struct EasyPicApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     weak var model: EditorModel?
     var pendingURL: URL?
+    var showEditor: (() -> Void)?
     private var allowTermination = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -77,22 +88,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func application(_ sender: NSApplication, openFiles filenames: [String]) {
         if let path = filenames.first {
+            showEditor?()
             let url = URL(fileURLWithPath: path)
-            if let model { model.open(url) } else { pendingURL = url }
+            if let model { model.open(url, viewingOnly: true) } else { pendingURL = url }
         }
         sender.reply(toOpenOrPrint: .success)
+    }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { showEditor?() }
+        return true
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if allowTermination { return .terminateNow }
         guard let model else { return .terminateNow }
-        guard !model.busy, !model.exportSheet, !model.choosingExportLocation, !model.textEditing, !model.aiSheet, !model.aiSelecting else { NSSound.beep(); return .terminateCancel }
+        guard !model.busy, !model.exportSheet, !model.choosingExportLocation, !model.choosingOpenLocation, !model.textEditing, !model.aiSheet, !model.aiSelecting else { NSSound.beep(); return .terminateCancel }
         guard model.dirty else { return .terminateNow }
         model.requestLeave { [weak self] in self?.allowTermination = true; NSApp.terminate(nil) }
         return .terminateCancel
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard let model else { return true }
-        guard !model.busy, !model.exportSheet, !model.choosingExportLocation, !model.textEditing, !model.aiSheet, !model.aiSelecting else { NSSound.beep(); return false }
+        guard !model.busy, !model.exportSheet, !model.choosingExportLocation, !model.choosingOpenLocation, !model.textEditing, !model.aiSheet, !model.aiSelecting else { NSSound.beep(); return false }
         guard model.dirty else { return true }
         model.requestLeave { [weak self] in self?.allowTermination = true; NSApp.terminate(nil) }
         return false

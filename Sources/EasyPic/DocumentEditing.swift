@@ -31,6 +31,7 @@ extension EditorModel {
     }
     func importSticker() {
         guard canUseLayers else { return }
+        sidePanel = .edit
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.image]
         guard panel.runModal() == .OK, let url = panel.url else { return }
         busy = true

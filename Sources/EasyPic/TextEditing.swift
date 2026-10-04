@@ -5,6 +5,7 @@ import EasyPicCore
 extension EditorModel {
     func addText() {
         guard canUseLayers, var doc = document else { return }
+        sidePanel = .edit
         var layer = StickerLayer(resourceID: UUID(), name: "文字", center: CGPoint(x: doc.size.width / 2, y: doc.size.height / 2), size: CGSize(width: 1, height: 1))
         var text = TextLayer(); text.fontSize = max(12, min(96, doc.size.width / 15)); layer.text = text
         layer.size = text.naturalSize
