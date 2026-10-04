@@ -65,7 +65,11 @@ struct BrushInspector: View {
     @ObservedObject var model: EditorModel
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("本地画笔", systemImage: "paintbrush.pointed").font(.headline)
+            HStack {
+                Label("本地画笔", systemImage: "paintbrush.pointed").font(.headline)
+                Spacer()
+                EditHistoryControls(model: model)
+            }
             Picker("画笔", selection: Binding(get: {
                 model.brushTool == .solid ? "solid" : (model.brushTool == .repair ? "repair" : "mosaic")
             }, set: { model.brushTool = $0 == "solid" ? .solid : ($0 == "repair" ? .repair : .pixelate) })) {

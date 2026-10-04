@@ -22,7 +22,6 @@ struct EditorView: View {
                     else { inspector }
                 }
             }
-            footer
         }
         .padding(20)
         .padding(.top, 8)
@@ -59,18 +58,12 @@ struct EditorView: View {
 
     private var header: some View {
         HStack(spacing: 14) {
-            Image(systemName: "viewfinder").font(.system(size: 22, weight: .light)).foregroundStyle(accent)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("EasyPic").font(.system(size: 15, weight: .semibold, design: .rounded)).tracking(4)
-                Text("让图片编辑轻一点").font(.system(size: 10)).foregroundStyle(.secondary)
-            }
-            Spacer()
-            if let url = model.fileURL {
-                Text(url.lastPathComponent).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
-                if model.dirty { Circle().fill(accent).frame(width: 5, height: 5).help("有未保存的修改") }
-            }
             Spacer()
             Button(action: model.openPanel) { Label("打开", systemImage: "folder") }.buttonStyle(.glass).disabled(model.busy || model.cropping || model.textEditing || model.aiSheet || model.aiSelecting)
+            if model.dirty {
+                Circle().fill(accent).frame(width: 5, height: 5)
+                    .help("有未保存的修改").accessibilityLabel("有未保存的修改")
+            }
             Button("保存项目", action: model.saveProject).buttonStyle(.glass).disabled(!model.canUseLayers)
             Button(action: model.showExport) { Label("导出", systemImage: "square.and.arrow.up") }.buttonStyle(.glassProminent).tint(accent).disabled(!model.canEdit)
         }
@@ -87,10 +80,7 @@ struct EditorView: View {
                     Image(systemName: "photo.on.rectangle.angled")
                         .font(.system(size: 62, weight: .ultraLight)).foregroundStyle(accent.opacity(0.9))
                         .padding(26).glassEffect(.regular, in: RoundedRectangle(cornerRadius: 32))
-                    VStack(spacing: 10) {
-                        Text("每张图片，都值得好好看").font(.system(size: 24, weight: .medium))
-                        Text("拖入图片开始，或打开整个文件夹浏览").font(.system(size: 13)).foregroundStyle(.secondary)
-                    }
+                    Text("拖入图片开始，或打开整个文件夹浏览").font(.system(size: 13)).foregroundStyle(.secondary)
                     Button("打开图片", action: model.openPanel).buttonStyle(.glassProminent).tint(accent).controlSize(.large)
                     Text("JPG · PNG · HEIC · TIFF · WebP · GIF 动图").font(.system(size: 10)).tracking(1).foregroundStyle(.tertiary)
                 }
@@ -105,51 +95,54 @@ struct EditorView: View {
     }
 
     private var inspector: some View {
-        ScrollView {
-        VStack(alignment: .leading, spacing: 22) {
-            HStack { Text(model.cropping ? "裁剪图片" : "编辑工具").font(.system(size: 14, weight: .semibold)); Spacer(); Image(systemName: model.cropping ? "crop" : "slider.horizontal.3").foregroundStyle(accent) }
-            if model.cropping {
-                Text("在图片上拖出选区。再次拖动可以重新选择范围。").font(.system(size: 12)).foregroundStyle(.secondary)
-                VStack(spacing: 10) {
-                    Button("居中 1 : 1") { model.setCenteredCrop(ratio: 1) }
-                    Button("居中 4 : 3") { model.setCenteredCrop(ratio: 4.0 / 3) }
-                    Button("居中 16 : 9") { model.setCenteredCrop(ratio: 16.0 / 9) }
-                }.buttonStyle(.glass).frame(maxWidth: .infinity)
-                if let rect = model.cropRect { Text("\(Int(rect.width)) × \(Int(rect.height)) px").font(.system(size: 12, design: .monospaced)).foregroundStyle(accent) }
-                Button(action: model.commitCrop) { Label("应用裁剪", systemImage: "checkmark") }.buttonStyle(.glassProminent).tint(accent).disabled(model.cropRect == nil || model.busy)
-                Button("取消", action: model.cancelCrop).buttonStyle(.glass).keyboardShortcut(.escape, modifiers: [])
-            } else {
-                Picker("工具面板",selection:$model.inspectorTab) {
-                    Text("图层").tag("layers"); Text("构图").tag("compose"); Text("更多").tag("more")
-                }.pickerStyle(.segmented).labelsHidden()
-                if model.inspectorTab == "layers" {
-                    LayerInspector(model:model)
-                } else if model.inspectorTab == "compose" {
-                    Button(action:model.beginCrop) { Label("裁剪图片",systemImage:"crop") }.buttonStyle(.glass)
-                    caption("旋转")
-                    HStack {
-                        editButton("左转","rotate.left") { model.apply(.counterclockwise) }
-                        editButton("右转","rotate.right") { model.apply(.clockwise) }
-                    }
-                    caption("镜像")
-                    HStack {
-                        editButton("水平","arrow.left.and.right.righttriangle.left.righttriangle.right") { model.apply(.mirrorHorizontal) }
-                        editButton("垂直","arrow.up.and.down.righttriangle.up.righttriangle.down") { model.apply(.mirrorVertical) }
-                    }
-                    Text("裁剪与整图变换会同步作用于全部图层。").font(.caption).foregroundStyle(.secondary)
-                } else {
-                Button(action:model.beginBrush) { Label("擦除、消除与马赛克",systemImage:"paintbrush.pointed") }.buttonStyle(.glass)
-                    Button(action:model.openAI) { Label("AI 改图",systemImage:"sparkles") }.buttonStyle(.glass)
-                    Text("本地画笔无需联网。AI 改图使用本机 Codex 的模型与登录配置。").font(.caption).foregroundStyle(.secondary)
-                }
-                Divider()
-                Text(model.dimensions + " px").font(.system(size:12,design:.monospaced))
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text(model.cropping ? "裁剪图片" : "编辑工具").font(.system(size: 14, weight: .semibold))
+                Spacer()
+                EditHistoryControls(model: model)
             }
-            Spacer(minLength: 0)
-            Label("原图始终保留", systemImage: "lock.shield").font(.system(size: 11)).foregroundStyle(.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    if model.cropping {
+                        Text("在图片上拖出选区。再次拖动可以重新选择范围。").font(.system(size: 12)).foregroundStyle(.secondary)
+                        VStack(spacing: 10) {
+                            Button("居中 1 : 1") { model.setCenteredCrop(ratio: 1) }
+                            Button("居中 4 : 3") { model.setCenteredCrop(ratio: 4.0 / 3) }
+                            Button("居中 16 : 9") { model.setCenteredCrop(ratio: 16.0 / 9) }
+                        }.buttonStyle(.glass).frame(maxWidth: .infinity)
+                        if let rect = model.cropRect { Text("\(Int(rect.width)) × \(Int(rect.height)) px").font(.system(size: 12, design: .monospaced)).foregroundStyle(accent) }
+                        Button(action: model.commitCrop) { Label("应用裁剪", systemImage: "checkmark") }.buttonStyle(.glassProminent).tint(accent).disabled(model.cropRect == nil || model.busy)
+                        Button("取消", action: model.cancelCrop).buttonStyle(.glass).keyboardShortcut(.escape, modifiers: [])
+                    } else {
+                        Picker("工具面板",selection:$model.inspectorTab) {
+                            Text("图层").tag("layers"); Text("构图").tag("compose"); Text("更多").tag("more")
+                        }.pickerStyle(.segmented).labelsHidden()
+                        if model.inspectorTab == "layers" {
+                            LayerInspector(model:model)
+                        } else if model.inspectorTab == "compose" {
+                            Button(action:model.beginCrop) { Label("裁剪图片",systemImage:"crop") }.buttonStyle(.glass)
+                            caption("旋转")
+                            HStack {
+                                editButton("左转","rotate.left") { model.apply(.counterclockwise) }
+                                editButton("右转","rotate.right") { model.apply(.clockwise) }
+                            }
+                            caption("镜像")
+                            HStack {
+                                editButton("水平","arrow.left.and.right.righttriangle.left.righttriangle.right") { model.apply(.mirrorHorizontal) }
+                                editButton("垂直","arrow.up.and.down.righttriangle.up.righttriangle.down") { model.apply(.mirrorVertical) }
+                            }
+                            Text("裁剪与整图变换会同步作用于全部图层。").font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Button(action:model.beginBrush) { Label("擦除、消除与马赛克",systemImage:"paintbrush.pointed") }.buttonStyle(.glass)
+                            Button(action:model.openAI) { Label("AI 改图",systemImage:"sparkles") }.buttonStyle(.glass)
+                            Text("本地画笔无需联网。AI 改图使用本机 Codex 的模型与登录配置。").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(16)
-        }
         .frame(width: 280)
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22))
         .disabled(model.busy)
@@ -163,28 +156,21 @@ struct EditorView: View {
         }.buttonStyle(.glass)
     }
 
-    private var footer: some View {
-        HStack(spacing: 16) {
-            HStack(spacing: 8) {
-                Button { model.navigate(-1) } label: { Image(systemName: "chevron.left") }
-                    .disabled(model.busy || model.cropping || (model.currentIndex ?? 0) <= 0)
-                Text(model.currentIndex.map { "\($0 + 1) / \(model.browsingFiles.count)" } ?? "0 / 0").font(.system(size: 11, design: .monospaced)).frame(minWidth: 46)
-                Button { model.navigate(1) } label: { Image(systemName: "chevron.right") }
-                    .disabled(model.busy || model.cropping || (model.currentIndex ?? -1) >= model.browsingFiles.count - 1)
-            }.buttonStyle(.plain).padding(.horizontal, 14).padding(.vertical, 12).glassEffect()
-            Text(model.status).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-            Spacer(minLength: 0)
-            if model.image != nil {
-                HStack(spacing: 18) {
-                    Button(action: model.undo) { Image(systemName: "arrow.uturn.backward") }.accessibilityLabel("撤销").disabled(!model.canEdit || !model.canUndo).help("撤销 ⌘Z")
-                    Button(action: model.redo) { Image(systemName: "arrow.uturn.forward") }.accessibilityLabel("重做").disabled(!model.canEdit || !model.canRedo).help("重做 ⇧⌘Z")
-                    Divider().frame(height: 16)
-                    Button { model.zoom = max(0.1, model.zoom / 1.25) } label: { Image(systemName: "minus") }.disabled(model.cropping)
-                    Button(action: model.resetZoom) { Text(model.actualSize ? "\(Int(model.zoom * 100))%" : "适应 \(Int(model.zoom * 100))%").font(.system(size: 11, design: .monospaced)) }.help("点击适应窗口 ⌘0")
-                    Button { model.zoom = min(8, model.zoom * 1.25) } label: { Image(systemName: "plus") }.disabled(model.cropping)
-                }.buttonStyle(.plain).padding(.horizontal, 18).padding(.vertical, 12).glassEffect()
-            }
+}
+
+struct EditHistoryControls: View {
+    @ObservedObject var model: EditorModel
+    var body: some View {
+        HStack(spacing: 8) {
+            Button(action: model.undo) {
+                Image(systemName: "arrow.uturn.backward").frame(width: 26, height: 26)
+            }.accessibilityLabel("撤销").help("撤销 ⌘Z").disabled(!model.canEdit || !model.canUndo)
+            Button(action: model.redo) {
+                Image(systemName: "arrow.uturn.forward").frame(width: 26, height: 26)
+            }.accessibilityLabel("重做").help("重做 ⇧⌘Z").disabled(!model.canEdit || !model.canRedo)
         }
+        .font(.system(size: 12, weight: .medium))
+        .buttonStyle(.glass).controlSize(.small)
     }
 }
 
@@ -300,7 +286,6 @@ struct ReadOnlyInspector: View {
             Label(model.missingLivePair ? "Live Photo 原片" : model.mediaInfo?.animation == nil ? "只读图片" : "动图播放", systemImage: "play.rectangle")
                 .font(.system(size: 14, weight: .semibold))
             Text("此图片仅供查看，编辑和导出已禁用。").font(.system(size: 12)).foregroundStyle(.secondary)
-            Text(model.dimensions + " px").font(.system(size: 13, design: .monospaced))
             if let animation = model.mediaInfo?.animation {
                 Text("\(animation.format.rawValue) · \(animation.frameCount) 帧").font(.system(size: 12)).foregroundStyle(.secondary)
                 Text("按原始帧时长循环播放").font(.system(size: 11)).foregroundStyle(.secondary)
@@ -314,7 +299,6 @@ struct ReadOnlyInspector: View {
             } else if model.missingLivePair { Text("缺少标识匹配的 MOV。请将从“照片”导出的未修改原片和视频放在同一文件夹，再重新打开。") .font(.system(size: 12)).foregroundStyle(.secondary) }
             else { Text("GIF · 静态单帧").font(.system(size: 12)).foregroundStyle(.secondary) }
             Spacer(minLength: 0)
-            Label("只读 · 原图保留", systemImage: "lock.shield").font(.system(size: 11)).foregroundStyle(.secondary)
         }
         .padding(22).frame(width: 200)
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22))
@@ -358,7 +342,7 @@ struct LivePhotoInspector: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Label(model.livePhoto?.kind ?? "Live Photo", systemImage: "livephoto").font(.system(size: 14, weight: .semibold))
-            Text(model.dimensions + " px").font(.system(size: 12, design: .monospaced))
+            HStack { Spacer(); EditHistoryControls(model: model) }
             HStack {
                 Button(action: playback.toggle) { Label(playback.isPlaying ? "暂停" : "播放", systemImage: playback.isPlaying ? "pause.fill" : "play.fill") }
                 Button(action: playback.restart) { Image(systemName: "backward.end.fill") }.help("从头播放")
@@ -378,7 +362,6 @@ struct LivePhotoInspector: View {
             Button(action: model.beginCrop) { Label("裁剪 Live Photo", systemImage: "crop") }.buttonStyle(.glass)
             if let error = playback.error { Text(error).font(.caption).foregroundStyle(.red) }
             Spacer(minLength: 0)
-            Label("仅裁剪与封面 · 原件保留", systemImage: "lock.shield").font(.system(size: 10)).foregroundStyle(.secondary)
         }
         .padding(22).frame(width: 200)
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22))
