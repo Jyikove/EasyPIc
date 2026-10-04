@@ -21,7 +21,7 @@
 
 ## 分阶段交付
 
-### 第 1 步：查看和基础编辑（已完成，0.1.1）
+### 第 1 步：查看和基础编辑（已完成，0.1.2）
 
 - 打开、拖入图片；通过 Finder 的“打开方式”打开。
 - 打开文件夹、前后切换图片。
@@ -35,6 +35,16 @@
 验收：像素方向、裁剪坐标、EXIF、透明区域和导出格式检查通过；界面能实际操作。
 
 当前格式边界：GIF/APNG/动态 WebP 只读播放，不提供裁剪、旋转、镜像或静态导出，GIF 即使单帧也只读。动图按原始帧时长循环播放，支持暂停、继续与重播；后台逐帧解码，切换图片时取消旧任务，避免一次缓存全部帧。多页 TIFF 只查看和编辑首页，不误判为动图。静态编辑归一化为 8-bit sRGB。RAW、HDR、16-bit 编辑和 ICC 原样保留属于后续增强，不承诺完整专业摄影工作流。
+
+### 第 1 步补充：动态照片（已完成，0.1.2）
+
+- Apple Live Photo：ImageIO 读取照片配对标识，AVFoundation 读取 MOV 标识和封面时间，按标识匹配照片与视频；支持 HEIC/JPG + MOV。
+- JPEG Motion Photo：读取 XMP Camera/Container 元数据，从文件尾定位内嵌视频；兼容带 GainMap 的容器和旧版 MicroVideo，检查范围和 MP4 头后提取到私有临时目录，使用后释放。[Android 格式规范](https://developer.android.com/media/platform/motion-photo-format)。HEIC/AVIF 内嵌视频暂未实现。
+- 播放：AVPlayer 管理视频和声音，AVPlayerItemVideoOutput 输出帧供 SwiftUI 画布显示；支持暂停、重播、静音和时间轴定位。
+- 编辑仅提供裁剪与封面。归一化照片坐标映射到定向后的视频，生成同一裁剪范围；封面可保留原始照片或选择实际视频帧，统一撤销/重做。
+- 导出：后台使用 AVAssetReader/Writer 生成 H.264 SDR MOV，保留首条音轨，写入新配对标识和封面时间；ImageIO 输出带同一标识的 JPG。先在暂存目录验证两文件，再发布为新目录。
+
+验收：合成样本的像素、方向、声音、配对标识、封面时间和导出重开检查通过；真实 JPEG Motion Photo 裁剪/封面导出重开通过，窗口播放和编辑入口已验证。Apple“照片”导入兼容性仍待实测。Motion Photo 当前统一导出为配对 JPG/MOV，不输出重新嵌入视频的单个 JPG，也不保留 HDR/GainMap。
 
 ### 第 2 步：贴纸和图层
 
@@ -106,6 +116,7 @@ EasyPic/
   Sources/EasyPic/            SwiftUI/AppKit 窗口、画布、编辑状态
   Sources/EasyPicCore/        图像解码、编辑命令、渲染、编码
   Tests/EasyPicCoreTests/     无需 XCTest 的像素验证程序
+  Assets/                    用户指定的应用图标源文件
   scripts/                   构建、检查、应用元信息
   build/EasyPic.app           可直接运行的当前应用
   README.md                  当前使用说明和已知边界

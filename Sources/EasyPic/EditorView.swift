@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import EasyPicCore
+import AVFoundation
 
 private let accent = Color(red: 0.93, green: 0.73, blue: 0.43)
 
@@ -15,7 +16,8 @@ struct EditorView: View {
             HStack(spacing: 16) {
                 canvas
                 if model.image != nil {
-                    if model.isReadOnly { ReadOnlyInspector(model: model, playback: model.playback) }
+                    if model.livePhoto != nil && !model.cropping { LivePhotoInspector(model: model, playback: model.livePlayback) }
+                    else if model.isReadOnly { ReadOnlyInspector(model: model, playback: model.playback) }
                     else { inspector }
                 }
             }
@@ -41,7 +43,10 @@ struct EditorView: View {
             }
             return true
         }
-        .sheet(isPresented: $model.exportSheet, onDismiss: model.cancelExport) { ExportView(model: model) }
+        .sheet(isPresented: $model.exportSheet, onDismiss: model.cancelExport) {
+            if model.livePhoto != nil { LivePhotoExportView(model: model) }
+            else { ExportView(model: model) }
+        }
         .alert("操作未完成", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("好") { model.error = nil }
         } message: { Text(model.error ?? "") }
@@ -162,8 +167,8 @@ struct EditorView: View {
             Spacer(minLength: 0)
             if model.image != nil {
                 HStack(spacing: 18) {
-                    Button(action: model.undo) { Image(systemName: "arrow.uturn.backward") }.disabled(!model.canEdit || !model.history.canUndo).help("撤销 ⌘Z")
-                    Button(action: model.redo) { Image(systemName: "arrow.uturn.forward") }.disabled(!model.canEdit || !model.history.canRedo).help("重做 ⇧⌘Z")
+                    Button(action: model.undo) { Image(systemName: "arrow.uturn.backward") }.disabled(!model.canEdit || !model.canUndo).help("撤销 ⌘Z")
+                    Button(action: model.redo) { Image(systemName: "arrow.uturn.forward") }.disabled(!model.canEdit || !model.canRedo).help("重做 ⇧⌘Z")
                     Divider().frame(height: 16)
                     Button { model.zoom = max(0.1, model.zoom / 1.25) } label: { Image(systemName: "minus") }.disabled(model.cropping)
                     Button(action: model.resetZoom) { Text(model.actualSize ? "\(Int(model.zoom * 100))%" : "适应 \(Int(model.zoom * 100))%").font(.system(size: 11, design: .monospaced)) }.help("点击适应窗口 ⌘0")
@@ -190,7 +195,9 @@ struct ImageCanvas: View {
             ScrollView([.horizontal, .vertical]) {
                 ZStack(alignment: .topLeading) {
                     checkerboard(size: size)
-                    if model.mediaInfo?.animation != nil {
+                    if model.livePhoto != nil {
+                        LivePhotoFrameView(playback: model.livePlayback, poster: image).frame(width: size.width, height: size.height)
+                    } else if model.mediaInfo?.animation != nil {
                         AnimatedFrameView(playback: model.playback, poster: image).frame(width: size.width, height: size.height)
                     } else {
                         Image(decorative: image, scale: 1).resizable().interpolation(.high).frame(width: size.width, height: size.height)
@@ -266,7 +273,7 @@ struct ReadOnlyInspector: View {
     @ObservedObject var playback: ImagePlayback
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
-            Label(model.mediaInfo?.animation == nil ? "只读图片" : "动图播放", systemImage: "play.rectangle")
+            Label(model.missingLivePair ? "Live Photo 原片" : model.mediaInfo?.animation == nil ? "只读图片" : "动图播放", systemImage: "play.rectangle")
                 .font(.system(size: 14, weight: .semibold))
             Text("此图片仅供查看，编辑和导出已禁用。").font(.system(size: 12)).foregroundStyle(.secondary)
             Text(model.dimensions + " px").font(.system(size: 13, design: .monospaced))
@@ -280,7 +287,8 @@ struct ReadOnlyInspector: View {
                 Text("第 \(playback.frameIndex + 1) / \(animation.frameCount) 帧")
                     .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
                 if let error = playback.error { Text(error).font(.caption).foregroundStyle(.red) }
-            } else { Text("GIF · 静态单帧").font(.system(size: 12)).foregroundStyle(.secondary) }
+            } else if model.missingLivePair { Text("缺少标识匹配的 MOV。请将从“照片”导出的未修改原片和视频放在同一文件夹，再重新打开。") .font(.system(size: 12)).foregroundStyle(.secondary) }
+            else { Text("GIF · 静态单帧").font(.system(size: 12)).foregroundStyle(.secondary) }
             Spacer(minLength: 0)
             Label("只读 · 原图保留", systemImage: "lock.shield").font(.system(size: 11)).foregroundStyle(.secondary)
         }
@@ -317,5 +325,71 @@ struct ExportView: View {
         .preferredColorScheme(.dark).tint(accent)
         .disabled(model.busy || model.choosingExportLocation)
         .interactiveDismissDisabled()
+    }
+}
+
+struct LivePhotoInspector: View {
+    @ObservedObject var model: EditorModel
+    @ObservedObject var playback: LivePhotoPlayback
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label(model.livePhoto?.kind ?? "Live Photo", systemImage: "livephoto").font(.system(size: 14, weight: .semibold))
+            Text(model.dimensions + " px").font(.system(size: 12, design: .monospaced))
+            HStack {
+                Button(action: playback.toggle) { Label(playback.isPlaying ? "暂停" : "播放", systemImage: playback.isPlaying ? "pause.fill" : "play.fill") }
+                Button(action: playback.restart) { Image(systemName: "backward.end.fill") }.help("从头播放")
+            }.buttonStyle(.glass)
+            Toggle("静音", isOn: $playback.muted).font(.system(size: 12))
+            if let live = model.livePhoto {
+                Text("拖动时间轴选择封面帧").font(.system(size: 11)).foregroundStyle(.secondary)
+                Slider(value: Binding(get: { playback.position }, set: { playback.seek($0) }), in: 0...max(0.001, live.lastFrameTime))
+                    .accessibilityLabel("Live Photo 封面时间")
+                Text(String(format: "%.2f / %.2f 秒", playback.position, live.duration)).font(.system(size: 11, design: .monospaced))
+            }
+            Button("将当前帧设为封面", action: model.setLiveCover).buttonStyle(.glassProminent).tint(accent)
+            Button("查看封面", action: playback.showCover).buttonStyle(.glass)
+            Button("恢复原始封面", action: model.restoreLiveCover).buttonStyle(.glass).disabled(model.liveHistory.edits.coverTime == nil)
+            Text("视频帧的清晰度可能低于原始照片。裁剪同时应用于照片和视频。").font(.system(size: 11)).foregroundStyle(.secondary)
+            Divider()
+            Button(action: model.beginCrop) { Label("裁剪 Live Photo", systemImage: "crop") }.buttonStyle(.glass)
+            if let error = playback.error { Text(error).font(.caption).foregroundStyle(.red) }
+            Spacer(minLength: 0)
+            Label("仅裁剪与封面 · 原件保留", systemImage: "lock.shield").font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+        .padding(22).frame(width: 200)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22))
+        .disabled(!model.canEdit)
+    }
+}
+
+struct LivePhotoFrameView: View {
+    @ObservedObject var playback: LivePhotoPlayback
+    let poster: CGImage
+    var body: some View {
+        Image(decorative: playback.showingMotion ? (playback.frame ?? poster) : poster, scale: 1)
+            .resizable().interpolation(.high)
+    }
+}
+
+struct LivePhotoExportView: View {
+    @ObservedObject var model: EditorModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Label("导出 Live Photo", systemImage: "livephoto").font(.title2.weight(.medium))
+            Text("创建新的配对文件夹，包含 LivePhoto.JPG 和 LivePhoto.MOV。照片与视频同步裁剪，保留声音，并记录所选封面的时间。")
+            Text("可直接在 EasyPic 中重新打开导出的 JPG 或 MOV。向 Apple“照片”导入时，请同时选择这两个文件。")
+                .foregroundStyle(.secondary)
+            Text("MOV 使用 H.264 编码；照片为 JPG。当前输出为 SDR，不保留原始 HEVC/HDR 编码。")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button("取消", action: model.cancelExport).keyboardShortcut(.cancelAction).buttonStyle(.glass)
+                Spacer()
+                if model.busy { ProgressView().controlSize(.small) }
+                Button("选择保存位置…", action: model.export).keyboardShortcut(.defaultAction).buttonStyle(.glassProminent)
+            }
+        }
+        .font(.system(size: 13)).padding(30).frame(width: 440)
+        .preferredColorScheme(.dark).tint(accent)
+        .disabled(model.busy || model.choosingExportLocation).interactiveDismissDisabled()
     }
 }

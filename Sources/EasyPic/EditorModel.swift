@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 import EasyPicCore
+import AVFoundation
 
 @MainActor
 final class EditorModel: ObservableObject {
@@ -21,12 +22,20 @@ final class EditorModel: ObservableObject {
     @Published var jpegQuality = 0.92
     @Published var browsingFiles: [URL] = []
     @Published private(set) var mediaInfo: ImageMediaInfo?
+    @Published private(set) var livePhoto: LivePhotoAsset?
+    @Published private(set) var liveHistory = LivePhotoHistory()
+    @Published private(set) var missingLivePair = false
     let playback = ImagePlayback()
+    let livePlayback = LivePhotoPlayback()
+    private var exportedLiveEdits = LivePhotoEdits()
     private var original: CGImage?
     private var exportedOperations: [EditOperation] = []
     private var pendingAfterExport: (() -> Void)?
-    var isReadOnly: Bool { mediaInfo?.isReadOnly == true }
-    var dirty: Bool { !isReadOnly && image != nil && history.operations != exportedOperations }
+    var isReadOnly: Bool { missingLivePair || mediaInfo?.isReadOnly == true }
+    var dirty: Bool { !isReadOnly && image != nil && (livePhoto != nil ? liveHistory.edits != exportedLiveEdits : history.operations != exportedOperations) }
+    var canUndo: Bool { livePhoto != nil ? liveHistory.canUndo : history.canUndo }
+    var canRedo: Bool { livePhoto != nil ? liveHistory.canRedo : history.canRedo }
+    var canTransform: Bool { canEdit && livePhoto == nil }
     var dimensions: String { image.map { "\($0.width) × \($0.height)" } ?? "" }
     var canBrowse: Bool { !busy && !cropping && !exportSheet && !choosingExportLocation }
     var canEdit: Bool { image != nil && !isReadOnly && canBrowse }
@@ -35,10 +44,10 @@ final class EditorModel: ObservableObject {
     func openPanel() {
         guard !busy, !exportSheet, !choosingExportLocation else { return }
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.image]
+        panel.allowedContentTypes = [.image, .quickTimeMovie]
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.message = "选择图片，或选择文件夹连续浏览"
+        panel.message = "选择图片、Live Photo 配套 MOV，或文件夹。Live Photo 原片和视频需在同一文件夹。"
         if panel.runModal() == .OK, let url = panel.url { open(url) }
     }
 
@@ -53,19 +62,26 @@ final class EditorModel: ObservableObject {
         busy = true
         Task {
             do {
-                let (loaded, target, siblings) = try await Task.detached(priority: .userInitiated) {
-                    let keys: Set<URLResourceKey> = [.isDirectoryKey, .contentTypeKey, .isRegularFileKey]
-                    let directory = try input.resourceValues(forKeys: keys).isDirectory == true
-                        ? input : input.deletingLastPathComponent()
-                    let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles])) ?? []
-                    let pictures = files.filter {
-                        guard let values = try? $0.resourceValues(forKeys: keys), values.isRegularFile == true else { return false }
-                        return values.contentType?.conforms(to: .image) == true
-                    }.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+                let (loaded, target, siblings, live, missing) = try await Task.detached(priority: .userInitiated) {
                     let isFolder = (try? input.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+                    let pictures = isFolder ? Self.pictures(in: input) : [input]
                     guard let target = isFolder ? pictures.first : input else { throw ImageFailure.unreadable }
-                    return (try ImageEngine.load(target), target, pictures)
+                    var live: LivePhotoAsset?
+                    var missing = false
+                    do { live = try await LivePhotoEngine.discover(target) }
+                    catch LivePhotoFailure.missingPair {
+                        guard target.pathExtension.lowercased() != "mov" else { throw LivePhotoFailure.missingPair }
+                        missing = true
+                    }
+                    let photo = live?.photoURL ?? target
+                    return (try ImageEngine.load(photo), photo, pictures, live, missing)
                 }.value
+                playback.clear()
+                livePlayback.clear()
+                livePhoto = live
+                missingLivePair = missing
+                liveHistory = LivePhotoHistory()
+                exportedLiveEdits = LivePhotoEdits()
                 original = loaded.image
                 image = loaded.image
                 mediaInfo = loaded.mediaInfo
@@ -76,13 +92,35 @@ final class EditorModel: ObservableObject {
                 zoom = 1
                 actualSize = false
                 cropRect = nil
-                if loaded.mediaInfo.animation != nil { status = "动图 · 只读播放" }
+                if let live {
+                    let composition = try await LivePhotoEngine.composition(for: live, edits: LivePhotoEdits())
+                    livePlayback.configure(live, composition: composition)
+                    livePlayback.restart()
+                    status = live.kind + " · 裁剪与封面 · 原件保留"
+                } else if missing { status = "Live Photo 原片 · 缺少配套 MOV，仅可查看" }
+                else if loaded.mediaInfo.animation != nil { status = "动图 · 只读播放" }
                 else if loaded.mediaInfo.isGIF { status = "GIF · 只读查看" }
                 else { status = loaded.frameCount > 1 ? "多页图片 · 当前查看和编辑首页" : "本地编辑 · 保留原图" }
                 playback.configure(url: target, poster: loaded.image, animation: loaded.mediaInfo.animation)
+                // Opening one file must not wait for macOS permission to enumerate its parent.
+                Task {
+                    let files = await Task.detached { Self.pictures(in: target.deletingLastPathComponent()) }.value
+                    guard self.fileURL == target else { return }
+                    if !files.isEmpty { self.browsingFiles = files }
+                }
             } catch { self.error = error.localizedDescription }
             busy = false
+
         }
+    }
+
+    private nonisolated static func pictures(in directory: URL) -> [URL] {
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentTypeKey]
+        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles])) ?? []
+        return files.filter {
+            guard let values = try? $0.resourceValues(forKeys: keys), values.isRegularFile == true else { return false }
+            return values.contentType?.conforms(to: .image) == true
+        }.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
     }
 
     func navigate(_ direction: Int) {
@@ -92,19 +130,21 @@ final class EditorModel: ObservableObject {
     }
 
     func apply(_ operation: EditOperation) {
-        guard canEdit else { return }
+        guard canTransform else { return }
         var next = history
         next.apply(operation)
         render(next)
     }
 
     func undo() {
-        guard canEdit, history.canUndo else { return }
+        guard canEdit, canUndo else { return }
+        if livePhoto != nil { var next = liveHistory; next.undo(); renderLive(next); return }
         var next = history; next.undo(); render(next)
     }
 
     func redo() {
-        guard canEdit, history.canRedo else { return }
+        guard canEdit, canRedo else { return }
+        if livePhoto != nil { var next = liveHistory; next.redo(); renderLive(next); return }
         var next = history; next.redo(); render(next)
     }
 
@@ -124,12 +164,50 @@ final class EditorModel: ObservableObject {
         }
     }
 
-    func beginCrop() { guard canEdit else { return }; cropping = true; cropRect = nil; zoom = 1; actualSize = false }
+    func beginCrop() { guard canEdit else { return }; livePlayback.showCover(); cropping = true; cropRect = nil; zoom = 1; actualSize = false }
     func cancelCrop() { cropping = false; cropRect = nil }
     func commitCrop() {
         guard let cropRect, cropRect.width >= 1, cropRect.height >= 1 else { return }
         cropping = false
-        apply(.crop(cropRect))
+        if livePhoto != nil, let image {
+            do {
+                var edits = liveHistory.edits
+                try edits.cropFurther(cropRect, displayedSize: CGSize(width: image.width, height: image.height))
+                var next = liveHistory; next.apply(edits); renderLive(next)
+            } catch { self.error = error.localizedDescription }
+        } else { apply(.crop(cropRect)) }
+    }
+
+    private func renderLive(_ next: LivePhotoHistory) {
+        guard let livePhoto, let original else { return }
+        livePlayback.showCover()
+        busy = true
+        let edits = next.edits
+        Task {
+            do {
+                let (preview, composition) = try await Task.detached(priority: .userInitiated) {
+                    (try await LivePhotoEngine.preview(livePhoto, original: original, edits: edits),
+                     try await LivePhotoEngine.composition(for: livePhoto, edits: edits))
+                }.value
+                image = preview; liveHistory = next; cropRect = nil
+                livePlayback.configure(livePhoto, composition: composition, coverTime: edits.coverTime)
+                status = livePhoto.kind + " · 裁剪与封面 · 原件保留"
+            } catch { self.error = error.localizedDescription }
+            busy = false
+        }
+    }
+
+    func setLiveCover() {
+        guard canEdit, let livePhoto else { return }
+        var edits = liveHistory.edits
+        edits.coverTime = min(livePhoto.lastFrameTime, max(0, livePlayback.position))
+        var next = liveHistory; next.apply(edits); renderLive(next)
+    }
+
+    func restoreLiveCover() {
+        guard canEdit, livePhoto != nil else { return }
+        var edits = liveHistory.edits; edits.coverTime = nil
+        var next = liveHistory; next.apply(edits); renderLive(next)
     }
 
     func setCenteredCrop(ratio: Double) {
@@ -143,6 +221,7 @@ final class EditorModel: ObservableObject {
     func showExport() { guard canEdit else { return }; exportSheet = true }
 
     func export() {
+        if livePhoto != nil { exportLive(); return }
         guard let image, let fileURL, !isReadOnly, !busy, !choosingExportLocation else { return }
         let panel = NSSavePanel()
         panel.directoryURL = fileURL.deletingLastPathComponent()
@@ -183,6 +262,35 @@ final class EditorModel: ObservableObject {
             } catch {
                 self.error = error.localizedDescription
                 busy = false
+            }
+        }
+    }
+
+    private func exportLive() {
+        guard let livePhoto, let original, !busy, !choosingExportLocation else { return }
+        let panel = NSSavePanel()
+        panel.directoryURL = livePhoto.photoURL.deletingLastPathComponent()
+        panel.nameFieldStringValue = livePhoto.photoURL.deletingPathExtension().lastPathComponent + "-edited-live"
+        panel.title = "保存 Live Photo 配对文件夹"
+        panel.message = "会创建新的文件夹，内含配对 JPG 与 MOV，保留动态内容和声音。"
+        panel.canCreateDirectories = true
+        choosingExportLocation = true
+        panel.begin { [weak self] response in
+            guard let self else { return }
+            self.choosingExportLocation = false
+            guard response == .OK, let url = panel.url else { return }
+            let snapshot = self.liveHistory.edits
+            self.busy = true; self.livePlayback.pause()
+            Task {
+                do {
+                    try await Task.detached(priority: .userInitiated) {
+                        try await LivePhotoEngine.export(livePhoto, original: original, edits: snapshot, to: url)
+                    }.value
+                    self.exportedLiveEdits = snapshot
+                    self.status = "Live Photo 已导出 · " + url.lastPathComponent
+                    self.exportSheet = false; self.busy = false
+                    let continuation = self.pendingAfterExport; self.pendingAfterExport = nil; continuation?()
+                } catch { self.error = error.localizedDescription; self.busy = false }
             }
         }
     }

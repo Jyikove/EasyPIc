@@ -4,10 +4,10 @@
     <key>CFBundleName</key><string>EasyPic</string>
     <key>CFBundleDisplayName</key><string>EasyPic</string>
     <key>CFBundleExecutable</key><string>EasyPic</string>
-    <key>CFBundleIconFile</key><string>EasyPic</string>
+    <key>CFBundleIconFile</key><string>EasyPicIcon.icns</string>
     <key>CFBundleIdentifier</key><string>local.jyikove.easypic</string>
-    <key>CFBundleVersion</key><string>2</string>
-    <key>CFBundleShortVersionString</key><string>0.1.1</string>
+    <key>CFBundleVersion</key><string>3</string>
+    <key>CFBundleShortVersionString</key><string>0.1.2</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>LSMinimumSystemVersion</key><string>26.0</string>
     <key>NSHighResolutionCapable</key><true/>
@@ -15,6 +15,6 @@
         <key>CFBundleTypeName</key><string>图片</string>
         <key>CFBundleTypeRole</key><string>Editor</string>
         <key>LSHandlerRank</key><string>Alternate</string>
-        <key>LSItemContentTypes</key><array><string>public.image</string></array>
+        <key>LSItemContentTypes</key><array><string>public.image</string><string>com.apple.quicktime-movie</string></array>
     </dict></array>
 </dict></plist>

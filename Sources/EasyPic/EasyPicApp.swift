@@ -14,12 +14,21 @@ struct EasyPicApp: App {
                     if let url = delegate.pendingURL { delegate.pendingURL = nil; model.open(url) }
                     else if model.mediaInfo?.animation != nil { model.playback.play() }
                 }
-                .onDisappear { model.playback.pause() }
+                .onDisappear { model.playback.pause(); model.livePlayback.pause() }
                 .onOpenURL { model.open($0) }
         }
         .defaultSize(width: 1180, height: 800)
         .windowStyle(.hiddenTitleBar)
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("关于 EasyPic") {
+                    var options: [NSApplication.AboutPanelOptionKey: Any] = [:]
+                    if let url = Bundle.main.url(forResource: "EasyPicIcon", withExtension: "icns"), let icon = NSImage(contentsOf: url) {
+                        options[.applicationIcon] = icon
+                    }
+                    NSApp.orderFrontStandardAboutPanel(options: options)
+                }
+            }
             CommandGroup(replacing: .newItem) {
                 Button("打开图片或文件夹…", action: model.openPanel).keyboardShortcut("o")
             }
@@ -27,15 +36,16 @@ struct EasyPicApp: App {
                 Button("导出图片…", action: model.showExport).keyboardShortcut("s").disabled(!model.canEdit)
             }
             CommandGroup(replacing: .undoRedo) {
-                Button("撤销", action: model.undo).keyboardShortcut("z").disabled(!model.canEdit || !model.history.canUndo)
-                Button("重做", action: model.redo).keyboardShortcut("z", modifiers: [.command, .shift]).disabled(!model.canEdit || !model.history.canRedo)
+                Button("撤销", action: model.undo).keyboardShortcut("z").disabled(!model.canEdit || !model.canUndo)
+                Button("重做", action: model.redo).keyboardShortcut("z", modifiers: [.command, .shift]).disabled(!model.canEdit || !model.canRedo)
             }
             CommandMenu("图片") {
-                Button("向右旋转 90°") { model.apply(.clockwise) }.keyboardShortcut("r").disabled(!model.canEdit)
-                Button("向左旋转 90°") { model.apply(.counterclockwise) }.keyboardShortcut("r", modifiers: [.command, .shift]).disabled(!model.canEdit)
-                Button("水平镜像") { model.apply(.mirrorHorizontal) }.disabled(!model.canEdit)
-                Button("垂直镜像") { model.apply(.mirrorVertical) }.disabled(!model.canEdit)
+                Button("向右旋转 90°") { model.apply(.clockwise) }.keyboardShortcut("r").disabled(!model.canTransform)
+                Button("向左旋转 90°") { model.apply(.counterclockwise) }.keyboardShortcut("r", modifiers: [.command, .shift]).disabled(!model.canTransform)
+                Button("水平镜像") { model.apply(.mirrorHorizontal) }.disabled(!model.canTransform)
+                Button("垂直镜像") { model.apply(.mirrorVertical) }.disabled(!model.canTransform)
                 Divider()
+                Button("将当前帧设为封面", action: model.setLiveCover).disabled(!model.canEdit || model.livePhoto == nil)
                 Button("裁剪", action: model.beginCrop).keyboardShortcut("k").disabled(!model.canEdit)
                 Button("适应窗口", action: model.resetZoom).keyboardShortcut("0").disabled(model.image == nil)
                 Button("实际像素") { model.actualSize = true; model.zoom = 1 }.keyboardShortcut("1").disabled(model.image == nil || model.cropping)
@@ -54,6 +64,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var allowTermination = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let iconURL = Bundle.main.url(forResource: "EasyPicIcon", withExtension: "icns"), let icon = NSImage(contentsOf: iconURL) {
+            NSApp.applicationIconImage = icon
+        }
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }
