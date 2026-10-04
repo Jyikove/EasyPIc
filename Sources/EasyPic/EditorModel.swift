@@ -67,6 +67,7 @@ final class EditorModel: ObservableObject {
     @Published var actualSize = false
     @Published var cropping = false
     @Published var cropRect: CGRect?
+    @Published var cropRatio: CropRatio = .free
     @Published var exportSheet = false
     @Published var choosingExportLocation = false
     @Published var choosingOpenLocation = false
@@ -74,6 +75,7 @@ final class EditorModel: ObservableObject {
     @Published var jpegQuality = 0.92
     @Published var browsingFiles: [URL] = []
     @Published var mediaInfo: ImageMediaInfo?
+    @Published var originalTypeIdentifier: String?
     @Published var livePhoto: LivePhotoAsset?
     @Published var liveHistory = LivePhotoHistory()
     @Published var missingLivePair = false
@@ -154,6 +156,7 @@ final class EditorModel: ObservableObject {
                 original = loaded.image
                 image = loaded.image
                 mediaInfo = loaded.mediaInfo
+                originalTypeIdentifier = loaded.typeIdentifier
                 fileURL = target
                 browsingFiles = siblings
                 zoom = 1
@@ -214,10 +217,15 @@ final class EditorModel: ObservableObject {
         guard var next = documentHistory else { return }; next.redo(); renderDocument(next)
     }
 
-    func beginCrop() { guard canEdit else { return }; sidePanel = .edit; activeEditorTool = .crop; cancelBrush(); livePlayback.showCover(); cropping = true; cropRect = nil; zoom = 1; actualSize = false }
+    func beginCrop() {
+        guard canEdit else { return }
+        sidePanel = .edit; activeEditorTool = .crop; cancelBrush(); livePlayback.showCover()
+        cropping = true; cropRatio = .free; cropRect = CGRect(origin: .zero, size: cropImageSize)
+        resetZoom()
+    }
     func cancelCrop() { cropping = false; cropRect = nil }
     func commitCrop() {
-        guard let cropRect, cropRect.width >= 1, cropRect.height >= 1 else { return }
+        guard canApplyCrop, let cropRect = cropPixelRect else { return }
         cropping = false
         if livePhoto != nil, let image {
             do {
@@ -258,13 +266,6 @@ final class EditorModel: ObservableObject {
         guard canEdit, livePhoto != nil else { return }
         var edits = liveHistory.edits; edits.coverTime = nil
         var next = liveHistory; next.apply(edits); renderLive(next)
-    }
-
-    func setCenteredCrop(ratio: Double) {
-        guard let image, cropping, !isReadOnly, !busy else { return }
-        let w = Double(image.width), h = Double(image.height)
-        let width = min(w, h * ratio), height = width / ratio
-        cropRect = CGRect(x: floor((w - width) / 2), y: floor((h - height) / 2), width: floor(width), height: floor(height))
     }
 
     func resetZoom() { zoom = 1; actualSize = false; viewportReset = UUID() }

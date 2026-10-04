@@ -97,30 +97,31 @@ struct AIEditorControls: View {
                 }
             }
             .disabled(model.aiRunning)
-            Text("使用本机 Codex 配置与登录。图片、提示词和参考图会发送到所配置的云端服务，并计入相应用量。").font(.caption).foregroundStyle(.secondary)
             TextEditor(text:$model.aiPrompt).disabled(model.aiRunning).frame(height:90).overlay(RoundedRectangle(cornerRadius:6).stroke(.secondary.opacity(0.3)))
             VStack(alignment: .leading, spacing: 10) {
                 Button(model.aiReference == nil ? "添加参考图…" : "更换参考图…", action: model.importAIReference)
                 if model.aiReference != nil { Button("移除参考图") { model.aiReference=nil } }
                 Button(model.aiSelection == nil ? "选择局部区域…" : "重新选择区域…") { model.aiSelecting=true }
+                    .help("在画布上拖出选区；仅合成返回图片的选区内容，蒙版供模型参考。")
                 if model.aiSelection != nil { Button("全图") { model.aiSelection=nil } }
                 if model.aiSelecting {
-                    Text("在画布上拖出选区。").font(.caption).foregroundStyle(.secondary)
                     Button("取消选择") { model.aiSelecting=false }
                 }
             }
             .disabled(model.aiRunning)
-            if model.aiSelection != nil { Text("仅将返回图片的选区合成到原图；选区蒙版作为参考，不保证模型严格执行蒙版编辑。").font(.caption).foregroundStyle(.secondary) }
             if let image = showOriginal ? model.aiInput : model.aiResult {
                 Image(decorative:image,scale:1).resizable().scaledToFit().frame(maxWidth:.infinity).frame(height:240)
                 Toggle("查看原图",isOn:$showOriginal)
             }
-            HStack { if model.aiRunning || detecting { ProgressView().controlSize(.small) }; Text(model.aiMessage).font(.caption).textSelection(.enabled) }
+            if model.aiRunning || detecting || model.aiMessage != "输入需要修改的内容。" {
+                HStack { if model.aiRunning || detecting { ProgressView().controlSize(.small) }; Text(model.aiMessage).font(.caption).textSelection(.enabled) }
+            }
             VStack(alignment: .leading, spacing: 10) {
                 if model.aiRunning { Button("取消任务",action:model.cancelAI) }
                 else { Button("收起 AI 工具",action:model.closeAI) }
                 if model.aiResult != nil { Button("应用结果",action:model.applyAI).buttonStyle(.glassProminent).disabled(!model.canUseLayers) }
                 Button(model.aiResult == nil ? "开始改图" : "重新生成",action:model.runAI).buttonStyle(.glassProminent).disabled(!model.canUseLayers || model.aiPrompt.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                    .help("使用本机 Codex 配置与登录；图片、提示词和参考图会发送到配置的云端服务，并计入相应用量。")
             }
         }
         .disabled(detecting)

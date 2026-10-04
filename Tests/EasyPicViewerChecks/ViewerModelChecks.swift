@@ -99,12 +99,15 @@ struct ViewerModelChecks {
         tools.toggleEditor()
         for tool in [EditorTool.horizontal, .vertical, .rotate] {
             tools.chooseEditorTool(tool); try await wait { !tools.busy }
+            try expect(tools.activeEditorTool == nil, "翻转或旋转打开了二级窗口")
         }
         try expect(tools.document?.operations == [.mirrorHorizontal, .mirrorVertical, .counterclockwise], "工具栏变换顺序或方向错误")
         try expect(tools.image?.width == 360 && tools.image?.height == 960, "旋转结果尺寸错误")
         tools.chooseEditorTool(.undo); try await wait { !tools.busy }
+        try expect(tools.activeEditorTool == nil, "撤销打开了二级窗口")
         try expect(tools.image?.width == 960 && tools.canRedo, "工具栏撤销未生效")
         tools.chooseEditorTool(.redo); try await wait { !tools.busy }
+        try expect(tools.activeEditorTool == nil, "重做打开了二级窗口")
         try expect(tools.image?.width == 360 && !tools.canRedo, "工具栏重做未生效")
         tools.playback.clear()
         print("PASS · 工具栏水平/垂直镜像、逆时针旋转及撤销重做")
@@ -184,6 +187,8 @@ struct ViewerModelChecks {
         try expect(live.activeEditorTool == .crop && live.canEdit, "取消裁剪未保留封面工具入口")
         live.playback.clear(); live.livePlayback.clear()
         print("PASS · GIF 保持只读播放、Live Photo 仅启用裁剪和封面相关工具")
-        print("10 项查看器与编辑工具模型验证通过")
+        try await CropChecks.run(photo: photo, liveURL: URL(fileURLWithPath: CommandLine.arguments[1]).appendingPathComponent("Portrait.JPG"))
+        try await SaveChecks.run(photo: photo)
+        print("17 项查看器与编辑工具模型验证通过")
     }
 }

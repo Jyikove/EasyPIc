@@ -42,7 +42,6 @@ struct InlineTextEditor: View {
         VStack(alignment: .leading, spacing: 12) {
             TextEditor(text: binding(\.content)).focused($contentFocused).frame(height: 110)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(.secondary.opacity(0.25)))
-            Text("画布同步预览；应用或切换工具后记为一个撤销步骤。").font(.caption).foregroundStyle(.secondary)
             Picker("字体", selection: binding(\.fontName)) {
                 ForEach(fonts, id: \.self) { name in
                     VStack(alignment: .leading, spacing: 2) {
@@ -66,7 +65,6 @@ struct InlineTextEditor: View {
             number("字号", \.fontSize, 1...4096)
             Slider(value: binding(\.fontSize), in: 8...max(200, text.fontSize))
             HStack { Toggle("粗体", isOn: binding(\.bold)); Toggle("斜体", isOn: binding(\.italic)) }
-            if text.unavailableTraits { Text("当前字体缺少所选粗体或斜体字形，将使用原始字形。").font(.caption).foregroundStyle(.orange) }
             color("文字颜色", \.color)
             Picker("对齐", selection: binding(\.alignment)) { Text("左 / 起始").tag(EasyPicCore.TextAlignment.left); Text("居中").tag(EasyPicCore.TextAlignment.center); Text("右 / 末尾").tag(EasyPicCore.TextAlignment.right) }
             Toggle("竖排（列从右向左）", isOn: binding(\.vertical))
@@ -91,7 +89,6 @@ struct InlineTextEditor: View {
             Button("恢复默认圆角（12 px）") {
                 binding(\.cornerRadius).wrappedValue = TextLayer.defaultBackgroundCornerRadius
             }.controlSize(.small)
-            Text("半径为 0 时使用直角；背景不透明时可见。圆角随文字缩放，并保存到项目。").font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("取消修改", action: model.cancelTextEditing).buttonStyle(.glass)
                 Spacer()

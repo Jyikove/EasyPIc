@@ -148,7 +148,7 @@ extension EditorModel {
                     return (doc, assets, base, try DocumentEngine.render(doc, resources: assets, base: base, maxDimension: 1600))
                 }.value
                 cancelBrush(); previewTask?.cancel(); playback.clear(); livePlayback.clear()
-                livePhoto = nil; missingLivePair = false; mediaInfo = nil
+                livePhoto = nil; missingLivePair = false; mediaInfo = nil; originalTypeIdentifier = nil
                 resources = assets; original = assets[doc.baseResourceID]; baseImage = base; image = base; documentPreview = preview
                 documentHistory = DocumentHistory(doc); savedDocument = doc; projectURL = url; fileURL = url
                 selectedLayerID = doc.activeLayerID; draftLayer = nil

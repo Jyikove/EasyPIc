@@ -27,6 +27,6 @@ fi
 target_arch="$(uname -m)"
 swiftc -parse-as-library -O -target "${target_arch}-apple-macosx26.0" -sdk "$sdk_path" -I "$module_dir" \
     "${app_sources[@]}" build/ViewerChecks/WindowSupport.swift \
-    Tests/EasyPicViewerChecks/ViewerModelChecks.swift "${core_objects[@]}" \
+    Tests/EasyPicViewerChecks/*.swift "${core_objects[@]}" \
     -o build/ViewerChecks/EasyPicViewerChecks
 build/ViewerChecks/EasyPicViewerChecks "$live_fixture_dir"

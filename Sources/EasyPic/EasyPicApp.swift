@@ -34,6 +34,7 @@ struct EasyPicApp: App {
                 Button("打开图片或文件夹…", action: model.openPanel).keyboardShortcut("o")
             }
             CommandGroup(replacing: .saveItem) {
+                Button("保存并替换原图") { model.chooseEditorTool(.replaceOriginal) }.disabled(!model.canReplaceOriginal)
                 Button("保存可编辑项目…", action: model.saveFromEditor).keyboardShortcut("s").disabled(!model.canPerformEditorActions || model.cropping || model.livePhoto != nil)
                 Button("导出图片…", action: model.exportFromEditor).keyboardShortcut("s", modifiers: [.command, .shift]).disabled(!model.canPerformEditorActions || model.cropping)
             }

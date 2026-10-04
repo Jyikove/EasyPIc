@@ -119,7 +119,6 @@ struct EditFileControls: View {
 struct ImageCanvas: View {
     @ObservedObject var model: EditorModel
     let image: CGImage
-    @State private var start: CGPoint?
     @State private var panOffset: CGSize = .zero
 
     var body: some View {
@@ -140,7 +139,7 @@ struct ImageCanvas: View {
                         Image(decorative: model.documentPreview ?? image, scale: 1).resizable().interpolation(.high).frame(width: size.width, height: size.height)
                     }
                     if model.aiSelecting { AISelectionOverlay(model:model,scale:scale,size:size) }
-                    else if model.cropping { cropOverlay(size: size, scale: scale) }
+                    else if model.cropping { CropOverlay(model: model, size: size, scale: scale) }
                     else if model.brushMode { BrushOverlay(model:model,scale:scale,size:size) }
                     else if model.sidePanel == .edit && (model.activeEditorTool == .sticker || model.activeEditorTool == .text) && model.livePhoto == nil && !model.isReadOnly { LayerCanvasOverlay(model: model, scale: scale, size: size) }
                 }
@@ -181,35 +180,6 @@ struct ImageCanvas: View {
         }.frame(width: size.width, height: size.height)
     }
 
-    private func cropOverlay(size: CGSize, scale: Double) -> some View {
-        ZStack(alignment: .topLeading) {
-            Canvas { context, area in
-                var mask = Path(CGRect(origin: .zero, size: area))
-                if let rect = model.cropRect { mask.addRect(CGRect(x: rect.minX * scale, y: rect.minY * scale, width: rect.width * scale, height: rect.height * scale)) }
-                context.fill(mask, with: .color(.black.opacity(0.5)), style: FillStyle(eoFill: true))
-            }
-            if let rect = model.cropRect {
-                let display = CGRect(x: rect.minX * scale, y: rect.minY * scale, width: rect.width * scale, height: rect.height * scale)
-                Rectangle().stroke(.white, lineWidth: 1.5).frame(width: display.width, height: display.height).offset(x: display.minX, y: display.minY)
-                Path { path in
-                    for fraction in [1.0 / 3, 2.0 / 3] {
-                        path.move(to: CGPoint(x: display.minX + display.width * fraction, y: display.minY)); path.addLine(to: CGPoint(x: display.minX + display.width * fraction, y: display.maxY))
-                        path.move(to: CGPoint(x: display.minX, y: display.minY + display.height * fraction)); path.addLine(to: CGPoint(x: display.maxX, y: display.minY + display.height * fraction))
-                    }
-                }.stroke(.white.opacity(0.35), lineWidth: 1)
-            }
-        }
-        .frame(width: size.width, height: size.height)
-        .contentShape(Rectangle())
-        .gesture(DragGesture(minimumDistance: 0).onChanged { value in
-            let point = CGPoint(x: min(size.width, max(0, value.location.x)), y: min(size.height, max(0, value.location.y)))
-            if start == nil { start = CGPoint(x: min(size.width, max(0, value.startLocation.x)), y: min(size.height, max(0, value.startLocation.y))) }
-            if let start {
-                let rect = CGRect(x: floor(min(start.x, point.x) / scale), y: floor(min(start.y, point.y) / scale), width: floor(abs(point.x - start.x) / scale), height: floor(abs(point.y - start.y) / scale))
-                model.cropRect = rect.width >= 1 && rect.height >= 1 ? rect : nil
-            }
-        }.onEnded { _ in start = nil })
-    }
 }
 
 struct AnimatedFrameView: View {
@@ -224,7 +194,7 @@ struct ExportView: View {
     @ObservedObject var model: EditorModel
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            HStack { Image(systemName: "square.and.arrow.up").foregroundStyle(accent); Text("导出图片").font(.title2.weight(.medium)) }
+            HStack { Image(systemName: "square.and.arrow.down.on.square").foregroundStyle(accent); Text("另存为").font(.title2.weight(.medium)) }
             Text("按当前图片的完整像素尺寸导出。缩放比例不影响导出质量。").font(.system(size: 12)).foregroundStyle(.secondary)
             HStack { Text("格式"); Spacer(); Picker("格式", selection: $model.exportFormat) { Text("PNG").tag(ExportFormat.png); Text("JPG").tag(ExportFormat.jpg) }.labelsHidden().pickerStyle(.segmented).frame(width: 190) }
             HStack { Text("尺寸"); Spacer(); Text(model.dimensions + " px").monospaced() }
@@ -255,14 +225,12 @@ struct LivePhotoCoverControls: View {
     @ObservedObject var playback: LivePhotoPlayback
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Live Photo 封面", systemImage: "livephoto").font(.headline)
             HStack {
                 Button(action: playback.toggle) { Label(playback.isPlaying ? "暂停" : "播放", systemImage: playback.isPlaying ? "pause.fill" : "play.fill") }
                 Button(action: playback.restart) { Image(systemName: "backward.end.fill") }.help("从头播放")
             }.buttonStyle(.glass)
             Toggle("静音", isOn: $playback.muted).font(.system(size: 12))
             if let live = model.livePhoto {
-                Text("拖动时间轴选择封面帧").font(.system(size: 11)).foregroundStyle(.secondary)
                 Slider(value: Binding(get: { playback.position }, set: { playback.seek($0) }), in: 0...max(0.001, live.lastFrameTime))
                     .accessibilityLabel("Live Photo 封面时间")
                 Text(String(format: "%.2f / %.2f 秒", playback.position, live.duration)).font(.system(size: 11, design: .monospaced))
@@ -270,7 +238,6 @@ struct LivePhotoCoverControls: View {
             Button("将当前帧设为封面", action: model.setLiveCover).buttonStyle(.glassProminent).tint(accent)
             Button("查看封面", action: playback.showCover).buttonStyle(.glass)
             Button("恢复原始封面", action: model.restoreLiveCover).buttonStyle(.glass).disabled(model.liveHistory.edits.coverTime == nil)
-            Text("视频帧的清晰度可能低于原始照片。裁剪同时应用于照片和视频。").font(.system(size: 11)).foregroundStyle(.secondary)
             if let error = playback.error { Text(error).font(.caption).foregroundStyle(.red) }
         }
         .disabled(!model.canEdit)

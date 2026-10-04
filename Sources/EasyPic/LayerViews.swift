@@ -30,7 +30,6 @@ struct LayerInspector: View {
                     }
                 }
             }.frame(maxHeight: 100)
-            if model.document?.layers.isEmpty == true { Text("添加贴纸或文字后，在画布中选择并调整。").foregroundStyle(.secondary) }
             if let layer = model.selectedLayer {
                 if layer.text != nil { Button("编辑文字…", action: model.editText).buttonStyle(.glass) }
                 numeric("中心 X", value: layer.center.x) { $0.center.x = $1 }
@@ -43,7 +42,6 @@ struct LayerInspector: View {
                     Button("置顶") { model.layerAction("top") }; Button("置底") { model.layerAction("bottom") }
                     Button("复制") { model.layerAction("duplicate") }; Button("删除") { model.layerAction("delete") }
                 }.buttonStyle(.glass).controlSize(.small)
-                Text(layer.text == nil ? "拖动移动；三个角等比缩放；上方圆点旋转，左上角删除。数值输入后按回车确认。" : "双击编辑文字；角点等比缩放文字。上方圆点旋转，左上角删除。").font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }
         .font(.system(size: 11)).disabled(!model.canUseLayers)

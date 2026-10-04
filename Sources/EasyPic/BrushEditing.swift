@@ -81,11 +81,8 @@ struct BrushToolControls: View {
             }
             if [.pixelate,.blur,.solid].contains(model.brushTool) { Toggle("矩形选区",isOn:$model.brushRectangle) }
             if model.brushTool == .clone {
-                Text(model.cloneSource == nil ? "先点击画布设置取样点，再拖动绘制。" : "取样点已设置。按住 Option 点击可重新取样。")
-                Button("重新取样") { model.cloneSource=nil }
+                Button("重新取样") { model.cloneSource=nil }.help("先点击画布设置取样点，再拖动绘制；Option 点击重新取样。")
             }
-            if model.brushTool == .repair { Text("消除作用于原图；复杂纹理或大范围水印可能需要分次涂抹。").font(.caption).foregroundStyle(.secondary) }
-            Text(model.brushTool == .solid ? "纯色笔画置于顶层，可撤销。" : "作用于原图，保留文字和贴纸，可撤销。").font(.caption).foregroundStyle(.secondary)
             Button("完成画笔",action:model.closeToolDetails).keyboardShortcut(.escape,modifiers:[]).buttonStyle(.glassProminent)
         }.disabled(model.busy)
     }
