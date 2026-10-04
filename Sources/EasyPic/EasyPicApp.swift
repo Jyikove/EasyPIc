@@ -34,12 +34,12 @@ struct EasyPicApp: App {
                 Button("打开图片或文件夹…", action: model.openPanel).keyboardShortcut("o")
             }
             CommandGroup(replacing: .saveItem) {
-                Button("保存可编辑项目…", action: model.saveProject).keyboardShortcut("s").disabled(!model.canUseLayers)
-                Button("导出图片…", action: model.showExport).keyboardShortcut("s", modifiers: [.command, .shift]).disabled(!model.canEdit)
+                Button("保存可编辑项目…", action: model.saveFromEditor).keyboardShortcut("s").disabled(!model.canPerformEditorActions || model.cropping || model.livePhoto != nil)
+                Button("导出图片…", action: model.exportFromEditor).keyboardShortcut("s", modifiers: [.command, .shift]).disabled(!model.canPerformEditorActions || model.cropping)
             }
             CommandGroup(replacing: .undoRedo) {
-                Button("撤销", action: model.undo).keyboardShortcut("z").disabled(!model.canEdit || !model.canUndo)
-                Button("重做", action: model.redo).keyboardShortcut("z", modifiers: [.command, .shift]).disabled(!model.canEdit || !model.canRedo)
+                Button("撤销") { model.chooseEditorTool(.undo) }.keyboardShortcut("z").disabled(!model.toolEnabled(.undo))
+                Button("重做") { model.chooseEditorTool(.redo) }.keyboardShortcut("z", modifiers: [.command, .shift]).disabled(!model.toolEnabled(.redo))
             }
             CommandMenu("图片") {
                 Button("AI 改图…",action:model.openAI).disabled(!model.canUseLayers)
@@ -101,14 +101,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if allowTermination { return .terminateNow }
         guard let model else { return .terminateNow }
-        guard !model.busy, !model.exportSheet, !model.choosingExportLocation, !model.choosingOpenLocation, !model.textEditing, !model.aiSheet, !model.aiSelecting else { NSSound.beep(); return .terminateCancel }
+        guard !model.busy, !model.exportSheet, !model.choosingExportLocation, !model.choosingOpenLocation, !model.textEditing, !model.aiSelecting, !model.aiRunning else { NSSound.beep(); return .terminateCancel }
         guard model.dirty else { return .terminateNow }
         model.requestLeave { [weak self] in self?.allowTermination = true; NSApp.terminate(nil) }
         return .terminateCancel
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard let model else { return true }
-        guard !model.busy, !model.exportSheet, !model.choosingExportLocation, !model.choosingOpenLocation, !model.textEditing, !model.aiSheet, !model.aiSelecting else { NSSound.beep(); return false }
+        guard !model.busy, !model.exportSheet, !model.choosingExportLocation, !model.choosingOpenLocation, !model.textEditing, !model.aiSelecting, !model.aiRunning else { NSSound.beep(); return false }
         guard model.dirty else { return true }
         model.requestLeave { [weak self] in self?.allowTermination = true; NSApp.terminate(nil) }
         return false

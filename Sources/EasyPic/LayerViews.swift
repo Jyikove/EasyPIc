@@ -3,10 +3,13 @@ import EasyPicCore
 
 struct LayerInspector: View {
     @ObservedObject var model: EditorModel
+    var showsInsertionButtons = true
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button(action: model.importSticker) { Label("添加图片贴纸…", systemImage: "plus.square.on.square") }.buttonStyle(.glass)
-            Button(action: model.addText) { Label("添加文字", systemImage: "textformat") }.buttonStyle(.glass)
+            if showsInsertionButtons {
+                Button(action: model.importSticker) { Label("添加图片贴纸…", systemImage: "plus.square.on.square") }.buttonStyle(.glass)
+                Button(action: model.addText) { Label("添加文字", systemImage: "textformat") }.buttonStyle(.glass)
+            }
             Menu {
                 Button(model.mergeDownTitle) {
                     if let id = model.selectedLayerID { model.mergeLayers(.down(id)) }
@@ -79,6 +82,9 @@ struct LayerCanvasOverlay: View {
     @State private var mode = ""
     @State private var opposite: CGPoint?
     @State private var initialPointerAngle: Double = 0
+    private var canManipulate: Bool {
+        model.canUseLayers || (model.textEditing && model.canPerformEditorActions)
+    }
     private func display(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x * scale, y: p.y * scale) }
     private func corner(_ layer: StickerLayer, x: Double, y: Double) -> CGPoint {
         let a = layer.angle * .pi / 180
@@ -104,7 +110,7 @@ struct LayerCanvasOverlay: View {
         .frame(width: size.width, height: size.height)
         .contentShape(Rectangle())
         .gesture(DragGesture(minimumDistance: 0).onChanged { value in
-            guard model.canUseLayers else { return }
+            guard canManipulate else { return }
             let start = CGPoint(x: value.startLocation.x / scale, y: value.startLocation.y / scale)
             let point = CGPoint(x: value.location.x / scale, y: value.location.y / scale)
             if initial == nil {
@@ -123,8 +129,13 @@ struct LayerCanvasOverlay: View {
                     }
                 }
                 if initial == nil {
-                    guard let layer = model.document?.layers.reversed().first(where: { $0.visible && $0.contains(start) }) else { model.selectedLayerID = nil; return }
-                    model.selectedLayerID = layer.id; initial = layer; mode = "move"
+                    if model.textEditing {
+                        guard let draft = model.draftLayer, draft.visible, draft.contains(start) else { return }
+                        initial = draft; mode = "move"
+                    } else {
+                        guard let layer = model.document?.layers.reversed().first(where: { $0.visible && $0.contains(start) }) else { model.selectedLayerID = nil; return }
+                        model.selectedLayerID = layer.id; initial = layer; mode = "move"
+                    }
                 }
             }
             guard var layer = initial else { return }
@@ -145,10 +156,11 @@ struct LayerCanvasOverlay: View {
             }
             model.updateLayer(layer, commit: false)
         }.onEnded { _ in
-            if initial != nil, let draft = model.draftLayer { model.updateLayer(draft, commit: true) }
+            if initial != nil, let draft = model.draftLayer { model.updateLayer(draft, commit: !model.textEditing) }
             initial = nil; opposite = nil; mode = ""
         })
         .simultaneousGesture(SpatialTapGesture(count: 2).onEnded { value in
+            guard model.canUseLayers else { return }
             let point = CGPoint(x: value.location.x / scale, y: value.location.y / scale)
             if let layer = model.document?.layers.reversed().first(where: { $0.visible && $0.contains(point) }), layer.text != nil {
                 model.selectedLayerID = layer.id; model.editText()
@@ -166,11 +178,12 @@ struct LayerCanvasOverlay: View {
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
+                .disabled(!model.canUseLayers)
                 .help("删除图层（可撤销）")
                 .accessibilityLabel("删除图层")
                 .position(display(corner(layer, x: -1, y: -1)))
             }
         }
-        .allowsHitTesting(model.canUseLayers)
+        .allowsHitTesting(canManipulate)
     }
 }

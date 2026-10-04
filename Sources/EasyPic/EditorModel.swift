@@ -8,7 +8,6 @@ import AVFoundation
 final class EditorModel: ObservableObject {
     @Published var documentHistory: DocumentHistory?
     @Published var selectedLayerID: UUID?
-    @Published var aiSheet = false
     @Published var aiSelecting = false
     @Published var aiRunning = false
     @Published var aiPrompt = ""
@@ -22,8 +21,9 @@ final class EditorModel: ObservableObject {
     var aiTask: Task<Void, Never>?
     var aiJobDirectory: URL?
     @Published var brushTarget = "base"
-    @Published var inspectorTab = "layers"
     @Published var sidePanel: ViewerPanel?
+    @Published var activeEditorTool: EditorTool?
+    var pendingEditorAction: (() -> Void)?
     @Published var recognizedText = ""
     @Published var recognizingText = false
     @Published var recognitionError: String?
@@ -88,7 +88,7 @@ final class EditorModel: ObservableObject {
     var canRedo: Bool { livePhoto != nil ? liveHistory.canRedo : documentHistory?.canRedo == true }
     var canTransform: Bool { canEdit && livePhoto == nil }
     var dimensions: String { image.map { "\($0.width) × \($0.height)" } ?? "" }
-    var canBrowse: Bool { !busy && !cropping && !exportSheet && !choosingExportLocation && !choosingOpenLocation && !textEditing && !aiSheet && !aiSelecting }
+    var canBrowse: Bool { !busy && !cropping && !exportSheet && !choosingExportLocation && !choosingOpenLocation && !textEditing && !aiSelecting && !aiRunning }
     var canEdit: Bool { image != nil && !isReadOnly && canBrowse }
     var currentIndex: Int? { fileURL.flatMap { browsingFiles.firstIndex(of: $0) } }
 
@@ -108,12 +108,14 @@ final class EditorModel: ObservableObject {
     }
 
     func open(_ url: URL, viewingOnly: Bool = false) {
-        guard !busy, !exportSheet, !choosingExportLocation, !choosingOpenLocation, !textEditing, !aiSheet, !aiSelecting else { return }
+        guard !busy, !exportSheet, !choosingExportLocation, !choosingOpenLocation, !textEditing, !aiRunning, !aiSelecting else { return }
         guard url.isFileURL else { error = "请打开本机图片文件。"; return }
         guard !cropping else { error = "请先应用或取消当前裁剪。"; return }
         requestLeave { [weak self] in
             guard let self else { return }
             if viewingOnly { self.sidePanel = nil }
+            self.activeEditorTool = nil
+            self.aiResult = nil; self.aiInput = nil; self.aiSelection = nil
             self.clearRecognition()
             self.load(url)
         }
@@ -212,7 +214,7 @@ final class EditorModel: ObservableObject {
         guard var next = documentHistory else { return }; next.redo(); renderDocument(next)
     }
 
-    func beginCrop() { guard canEdit else { return }; cancelBrush(); livePlayback.showCover(); cropping = true; cropRect = nil; zoom = 1; actualSize = false }
+    func beginCrop() { guard canEdit else { return }; sidePanel = .edit; activeEditorTool = .crop; cancelBrush(); livePlayback.showCover(); cropping = true; cropRect = nil; zoom = 1; actualSize = false }
     func cancelCrop() { cropping = false; cropRect = nil }
     func commitCrop() {
         guard let cropRect, cropRect.width >= 1, cropRect.height >= 1 else { return }

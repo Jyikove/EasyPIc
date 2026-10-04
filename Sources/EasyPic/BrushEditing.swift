@@ -4,7 +4,9 @@ import EasyPicCore
 
 extension EditorModel {
     func beginBrush() {
-        guard canUseLayers else { return }; sidePanel = .edit; brushTarget = "base"; brushMode = true; brushPoints = []; cloneSource = nil
+        guard canUseLayers else { return }; sidePanel = .edit
+        activeEditorTool = brushTool == .solid ? .solid : (brushTool == .repair ? .repair : .mosaic)
+        brushTarget = "base"; brushMode = true; brushPoints = []; cloneSource = nil
     }
     func cancelBrush() { brushMode = false; brushPoints = []; cloneSource = nil }
     func commitBrush(_ points: [CGPoint]) {
@@ -61,20 +63,10 @@ extension EditorModel {
         }
     }
 }
-struct BrushInspector: View {
+struct BrushToolControls: View {
     @ObservedObject var model: EditorModel
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Label("本地画笔", systemImage: "paintbrush.pointed").font(.headline)
-                Spacer()
-                EditHistoryControls(model: model)
-            }
-            Picker("画笔", selection: Binding(get: {
-                model.brushTool == .solid ? "solid" : (model.brushTool == .repair ? "repair" : "mosaic")
-            }, set: { model.brushTool = $0 == "solid" ? .solid : ($0 == "repair" ? .repair : .pixelate) })) {
-                Text("纯色").tag("solid"); Text("马赛克").tag("mosaic"); Text("消除").tag("repair")
-            }.pickerStyle(.segmented)
             if model.brushTool == .pixelate || model.brushTool == .blur {
                 Picker("马赛克样式", selection: $model.brushTool) {
                     Text("像素块").tag(BrushTool.pixelate); Text("高斯模糊").tag(BrushTool.blur)
@@ -94,9 +86,8 @@ struct BrushInspector: View {
             }
             if model.brushTool == .repair { Text("消除作用于原图；复杂纹理或大范围水印可能需要分次涂抹。").font(.caption).foregroundStyle(.secondary) }
             Text(model.brushTool == .solid ? "纯色笔画置于顶层，可撤销。" : "作用于原图，保留文字和贴纸，可撤销。").font(.caption).foregroundStyle(.secondary)
-            Button("完成画笔",action:model.cancelBrush).keyboardShortcut(.escape,modifiers:[]).buttonStyle(.glassProminent)
-            Spacer()
-        }.padding(20).frame(width:280).glassEffect(.regular,in:RoundedRectangle(cornerRadius:22)).disabled(model.busy)
+            Button("完成画笔",action:model.closeToolDetails).keyboardShortcut(.escape,modifiers:[]).buttonStyle(.glassProminent)
+        }.disabled(model.busy)
     }
 }
 struct BrushOverlay: View {

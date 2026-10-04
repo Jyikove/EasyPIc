@@ -47,9 +47,12 @@ struct CheckRunner {
             }
             return
         }
-        if CommandLine.arguments.contains("--live-fixtures") {
-            try await LivePhotoTests.makeFixtures(at: URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("build/LivePhotoFixtures"))
-            print("已生成 build/LivePhotoFixtures")
+        if let index = CommandLine.arguments.firstIndex(of: "--live-fixtures") {
+            let root = CommandLine.arguments.indices.contains(index + 1)
+                ? URL(fileURLWithPath: CommandLine.arguments[index + 1])
+                : URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("build/LivePhotoFixtures")
+            try await LivePhotoTests.makeFixtures(at: root)
+            print("已生成 Live Photo 合成样本")
             return
         }
         if let index = CommandLine.arguments.firstIndex(of: "--ai-smoke"), CommandLine.arguments.indices.contains(index + 1) {

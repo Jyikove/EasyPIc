@@ -10,6 +10,8 @@ swift build -c release --sdk "$sdk_path"
 binary_dir="$(swift build -c release --sdk "$sdk_path" --show-bin-path)"
 "$binary_dir/EasyPicChecks" --viewer-checks
 mkdir -p build/ViewerChecks
+live_fixture_dir="$(mktemp -d "$project_dir/build/ViewerChecks/LivePhotos.XXXXXX")"
+"$binary_dir/EasyPicChecks" --live-fixtures "$live_fixture_dir"
 # Compile the actual app model and views without launching an application window.
 # Removing only the app entry annotation lets the model-check runner own main.
 sed '/^@main$/d' Sources/EasyPic/EasyPicApp.swift > build/ViewerChecks/WindowSupport.swift
@@ -27,4 +29,4 @@ swiftc -parse-as-library -O -target "${target_arch}-apple-macosx26.0" -sdk "$sdk
     "${app_sources[@]}" build/ViewerChecks/WindowSupport.swift \
     Tests/EasyPicViewerChecks/ViewerModelChecks.swift "${core_objects[@]}" \
     -o build/ViewerChecks/EasyPicViewerChecks
-build/ViewerChecks/EasyPicViewerChecks
+build/ViewerChecks/EasyPicViewerChecks "$live_fixture_dir"

@@ -31,9 +31,17 @@ extension EditorModel {
     }
     func importSticker() {
         guard canUseLayers else { return }
-        sidePanel = .edit
+        sidePanel = .edit; activeEditorTool = .sticker
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.image]
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        choosingOpenLocation = true
+        panel.begin { [weak self] response in
+            guard let self else { return }; self.choosingOpenLocation = false
+            if response == .OK, let url = panel.url { self.importSticker(from: url) }
+        }
+    }
+    func importSticker(from url: URL) {
+        guard canUseLayers else { return }
+        sidePanel = .edit; activeEditorTool = .sticker
         busy = true
         Task {
             do {
@@ -58,6 +66,7 @@ extension EditorModel {
         let assets = resources, doc = next.document
         let cachedBase = document?.operations == doc.operations && document?.baseResourceID == doc.baseResourceID && document?.baseStrokes == doc.baseStrokes ? baseImage : nil
         Task {
+            var succeeded = false
             do {
                 let (base, preview) = try await Task.detached(priority: .userInitiated) {
                     let base = try cachedBase ?? DocumentEngine.renderBase(doc, resources: assets)
@@ -66,8 +75,11 @@ extension EditorModel {
                 documentHistory = next; baseImage = base; image = base; documentPreview = preview
                 if !doc.layers.contains(where: { $0.id == selectedLayerID }) { selectedLayerID = nil }
                 cropRect = nil; status = "可编辑图层 · 原图保留"
+                succeeded = true
             } catch { self.error = error.localizedDescription }
             busy = false
+            let continuation = pendingEditorAction; pendingEditorAction = nil
+            if succeeded { continuation?() }
         }
     }
     func updateLayer(_ layer: StickerLayer, commit: Bool) {

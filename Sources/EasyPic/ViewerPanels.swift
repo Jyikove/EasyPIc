@@ -5,18 +5,22 @@ import EasyPicCore
 enum ViewerPanel { case thumbnails, text, edit }
 
 extension EditorModel {
-    var canSwitchPanel: Bool { canBrowse && !brushMode }
+    var canSwitchPanel: Bool { (canBrowse || (textEditing && canPerformEditorActions)) && !brushMode }
     var canNavigatePrevious: Bool { canBrowse && (currentIndex ?? 0) > 0 }
     var canNavigateNext: Bool {
         canBrowse && currentIndex.map { $0 + 1 < browsingFiles.count } == true
     }
 
     func togglePanel(_ panel: ViewerPanel) {
-        guard canBrowse else { return }
-        if brushMode { cancelBrush() }
-        sidePanel = sidePanel == panel ? nil : panel
-        if sidePanel == .text { recognizeText() }
-        else { clearRecognition() }
+        if panel == .edit { toggleEditor(); return }
+        guard canSwitchPanel else { return }
+        finishInlineText { [weak self] in
+            guard let self else { return }
+            self.cancelBrush(); self.activeEditorTool = nil
+            self.sidePanel = self.sidePanel == panel ? nil : panel
+            if self.sidePanel == .text { self.recognizeText() }
+            else { self.clearRecognition() }
+        }
     }
 
     func clearRecognition() {

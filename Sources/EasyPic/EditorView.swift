@@ -20,10 +20,7 @@ struct EditorView: View {
                 } else if model.sidePanel == .text {
                     TextRecognitionPanel(model: model)
                 } else if model.sidePanel == .edit {
-                    if model.livePhoto != nil && !model.cropping { LivePhotoInspector(model: model, playback: model.livePlayback) }
-                    else if model.brushMode { BrushInspector(model: model) }
-                    else if model.isReadOnly { ReadOnlyInspector(model: model, playback: model.playback) }
-                    else { inspector }
+                    EditingSidebar(model: model)
                 }
             }
         }
@@ -35,8 +32,8 @@ struct EditorView: View {
                 toolbarButton("下一张", "chevron.right", disabled: !model.canNavigateNext) { model.navigate(1) }
                 toolbarButton("预览", "square.grid.2x2", disabled: model.image == nil || !model.canSwitchPanel, selected: model.sidePanel == .thumbnails) { model.togglePanel(.thumbnails) }
                 toolbarButton("提取文本", "text.viewfinder", disabled: model.image == nil || !model.canSwitchPanel, selected: model.sidePanel == .text) { model.togglePanel(.text) }
-                toolbarButton("逆时针旋转 90°", "rotate.left", disabled: !model.canTransform || model.brushMode) { model.apply(.counterclockwise) }
-                toolbarButton("编辑", "slider.horizontal.3", disabled: !model.canEdit, selected: model.sidePanel == .edit) { model.togglePanel(.edit) }
+                toolbarButton("逆时针旋转 90°", "arrow.counterclockwise", disabled: !model.canTransform || model.brushMode) { model.apply(.counterclockwise) }
+                toolbarButton("编辑", "pencil.tip", disabled: !model.canPerformEditorActions, selected: model.sidePanel == .edit) { model.toggleEditor() }
             }
         }
         .toolbar(removing: .title)
@@ -65,10 +62,6 @@ struct EditorView: View {
                 if let url { Task { @MainActor in model.open(url, viewingOnly: true) } }
             }
             return true
-        }
-        .sheet(isPresented: $model.aiSheet) { AIEditorSheet(model:model) }
-        .sheet(isPresented: $model.textEditing) {
-            if let layer = model.selectedLayer { TextEditorSheet(model: model, layer: layer) }
         }
         .sheet(isPresented: $model.exportSheet, onDismiss: model.cancelExport) {
             if model.livePhoto != nil { LivePhotoExportView(model: model) }
@@ -107,80 +100,6 @@ struct EditorView: View {
         .overlay(RoundedRectangle(cornerRadius: 22).strokeBorder(dropTarget ? accent : Color.white.opacity(0.1), lineWidth: dropTarget ? 2 : 1))
     }
 
-    private var inspector: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text(model.cropping ? "裁剪图片" : "编辑工具").font(.system(size: 14, weight: .semibold))
-                Spacer()
-                EditHistoryControls(model: model)
-            }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
-                    if model.cropping {
-                        Text("在图片上拖出选区。再次拖动可以重新选择范围。").font(.system(size: 12)).foregroundStyle(.secondary)
-                        VStack(spacing: 10) {
-                            Button("居中 1 : 1") { model.setCenteredCrop(ratio: 1) }
-                            Button("居中 4 : 3") { model.setCenteredCrop(ratio: 4.0 / 3) }
-                            Button("居中 16 : 9") { model.setCenteredCrop(ratio: 16.0 / 9) }
-                        }.buttonStyle(.glass).frame(maxWidth: .infinity)
-                        if let rect = model.cropRect { Text("\(Int(rect.width)) × \(Int(rect.height)) px").font(.system(size: 12, design: .monospaced)).foregroundStyle(accent) }
-                        Button(action: model.commitCrop) { Label("应用裁剪", systemImage: "checkmark") }.buttonStyle(.glassProminent).tint(accent).disabled(model.cropRect == nil || model.busy)
-                        Button("取消", action: model.cancelCrop).buttonStyle(.glass).keyboardShortcut(.escape, modifiers: [])
-                    } else {
-                        Picker("工具面板",selection:$model.inspectorTab) {
-                            Text("图层").tag("layers"); Text("构图").tag("compose"); Text("更多").tag("more")
-                        }.pickerStyle(.segmented).labelsHidden()
-                        if model.inspectorTab == "layers" {
-                            LayerInspector(model:model)
-                        } else if model.inspectorTab == "compose" {
-                            Button(action:model.beginCrop) { Label("裁剪图片",systemImage:"crop") }.buttonStyle(.glass)
-                            caption("镜像")
-                            HStack {
-                                editButton("水平","arrow.left.and.right.righttriangle.left.righttriangle.right") { model.apply(.mirrorHorizontal) }
-                                editButton("垂直","arrow.up.and.down.righttriangle.up.righttriangle.down") { model.apply(.mirrorVertical) }
-                            }
-                            Text("裁剪与整图变换会同步作用于全部图层。").font(.caption).foregroundStyle(.secondary)
-                        } else {
-                            Button(action:model.beginBrush) { Label("擦除、消除与马赛克",systemImage:"paintbrush.pointed") }.buttonStyle(.glass)
-                            Button(action:model.openAI) { Label("AI 改图",systemImage:"sparkles") }.buttonStyle(.glass)
-                            Text("本地画笔无需联网。AI 改图使用本机 Codex 的模型与登录配置。").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            EditFileControls(model: model)
-        }
-        .padding(16)
-        .frame(width: 280)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22))
-        .disabled(model.busy)
-    }
-
-    private func caption(_ text: String) -> some View { Text(text).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary) }
-    private func editButton(_ title: String, _ symbol: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 8) { Image(systemName: symbol).font(.system(size: 18, weight: .light)); Text(title).font(.system(size: 11)) }
-                .frame(maxWidth: .infinity).padding(.vertical, 8)
-        }.buttonStyle(.glass)
-    }
-
-}
-
-struct EditHistoryControls: View {
-    @ObservedObject var model: EditorModel
-    var body: some View {
-        HStack(spacing: 8) {
-            Button(action: model.undo) {
-                Image(systemName: "arrow.uturn.backward").frame(width: 26, height: 26)
-            }.accessibilityLabel("撤销").help("撤销 ⌘Z").disabled(!model.canEdit || !model.canUndo)
-            Button(action: model.redo) {
-                Image(systemName: "arrow.uturn.forward").frame(width: 26, height: 26)
-            }.accessibilityLabel("重做").help("重做 ⇧⌘Z").disabled(!model.canEdit || !model.canRedo)
-        }
-        .font(.system(size: 12, weight: .medium))
-        .buttonStyle(.glass).controlSize(.small)
-    }
 }
 
 struct EditFileControls: View {
@@ -188,10 +107,10 @@ struct EditFileControls: View {
     var body: some View {
         HStack {
             if model.livePhoto == nil {
-                Button("保存项目", action: model.saveProject).disabled(!model.canUseLayers)
+                Button("保存项目", action: model.saveFromEditor).disabled(!model.canPerformEditorActions || model.cropping)
             }
             Spacer(minLength: 0)
-            Button("导出", action: model.showExport).disabled(!model.canEdit)
+            Button("导出", action: model.exportFromEditor).disabled(!model.canPerformEditorActions || model.cropping)
         }
         .buttonStyle(.glass).controlSize(.small)
     }
@@ -223,7 +142,7 @@ struct ImageCanvas: View {
                     if model.aiSelecting { AISelectionOverlay(model:model,scale:scale,size:size) }
                     else if model.cropping { cropOverlay(size: size, scale: scale) }
                     else if model.brushMode { BrushOverlay(model:model,scale:scale,size:size) }
-                    else if model.sidePanel == .edit && model.livePhoto == nil && !model.isReadOnly { LayerCanvasOverlay(model: model, scale: scale, size: size) }
+                    else if model.sidePanel == .edit && (model.activeEditorTool == .sticker || model.activeEditorTool == .text) && model.livePhoto == nil && !model.isReadOnly { LayerCanvasOverlay(model: model, scale: scale, size: size) }
                 }
                 .frame(width: size.width, height: size.height)
                 .offset(panOffset)
@@ -301,34 +220,6 @@ struct AnimatedFrameView: View {
     }
 }
 
-struct ReadOnlyInspector: View {
-    @ObservedObject var model: EditorModel
-    @ObservedObject var playback: ImagePlayback
-    var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            Label(model.missingLivePair ? "Live Photo 原片" : model.mediaInfo?.animation == nil ? "只读图片" : "动图播放", systemImage: "play.rectangle")
-                .font(.system(size: 14, weight: .semibold))
-            Text("此图片仅供查看，编辑和导出已禁用。").font(.system(size: 12)).foregroundStyle(.secondary)
-            if let animation = model.mediaInfo?.animation {
-                Text("\(animation.format.rawValue) · \(animation.frameCount) 帧").font(.system(size: 12)).foregroundStyle(.secondary)
-                Text("按原始帧时长循环播放").font(.system(size: 11)).foregroundStyle(.secondary)
-                Button(action: playback.toggle) {
-                    Label(playback.isPlaying ? "暂停" : "播放", systemImage: playback.isPlaying ? "pause.fill" : "play.fill")
-                }.buttonStyle(.glass)
-                Button("从头播放", action: playback.restart).buttonStyle(.glass)
-                Text("第 \(playback.frameIndex + 1) / \(animation.frameCount) 帧")
-                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
-                if let error = playback.error { Text(error).font(.caption).foregroundStyle(.red) }
-            } else if model.missingLivePair { Text("缺少标识匹配的 MOV。请将从“照片”导出的未修改原片和视频放在同一文件夹，再重新打开。") .font(.system(size: 12)).foregroundStyle(.secondary) }
-            else { Text("GIF · 静态单帧").font(.system(size: 12)).foregroundStyle(.secondary) }
-            Spacer(minLength: 0)
-        }
-        .padding(22).frame(width: 200)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22))
-        .disabled(model.busy)
-    }
-}
-
 struct ExportView: View {
     @ObservedObject var model: EditorModel
     var body: some View {
@@ -359,13 +250,12 @@ struct ExportView: View {
     }
 }
 
-struct LivePhotoInspector: View {
+struct LivePhotoCoverControls: View {
     @ObservedObject var model: EditorModel
     @ObservedObject var playback: LivePhotoPlayback
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label(model.livePhoto?.kind ?? "Live Photo", systemImage: "livephoto").font(.system(size: 14, weight: .semibold))
-            HStack { Spacer(); EditHistoryControls(model: model) }
+            Label("Live Photo 封面", systemImage: "livephoto").font(.headline)
             HStack {
                 Button(action: playback.toggle) { Label(playback.isPlaying ? "暂停" : "播放", systemImage: playback.isPlaying ? "pause.fill" : "play.fill") }
                 Button(action: playback.restart) { Image(systemName: "backward.end.fill") }.help("从头播放")
@@ -381,14 +271,8 @@ struct LivePhotoInspector: View {
             Button("查看封面", action: playback.showCover).buttonStyle(.glass)
             Button("恢复原始封面", action: model.restoreLiveCover).buttonStyle(.glass).disabled(model.liveHistory.edits.coverTime == nil)
             Text("视频帧的清晰度可能低于原始照片。裁剪同时应用于照片和视频。").font(.system(size: 11)).foregroundStyle(.secondary)
-            Divider()
-            Button(action: model.beginCrop) { Label("裁剪 Live Photo", systemImage: "crop") }.buttonStyle(.glass)
             if let error = playback.error { Text(error).font(.caption).foregroundStyle(.red) }
-            Spacer(minLength: 0)
-            EditFileControls(model: model)
         }
-        .padding(22).frame(width: 200)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22))
         .disabled(!model.canEdit)
     }
 }
