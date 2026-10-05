@@ -34,13 +34,10 @@ struct TextTests {
         text.vertical = true
         let vertical = bytes(try render(text))
         try expect(vertical.contains { $0 > 0 }); try expect(horizontal != vertical)
-        // The actual vertical frame progresses columns right to left and uses vertical glyph shaping.
-        let attrs: [NSAttributedString.Key: Any] = [NSAttributedString.Key(kCTFontAttributeName as String): text.font, NSAttributedString.Key(kCTVerticalFormsAttributeName as String): true]
-        let setter = CTFramesetterCreateWithAttributedString(NSAttributedString(string: text.content, attributes: attrs))
-        let frame = CTFramesetterCreateFrame(setter, CFRange(location: 0, length: 0), CGPath(rect: CGRect(x: 0, y: 0, width: 360, height: 260), transform: nil), [kCTFrameProgressionAttributeName: CTFrameProgression.rightToLeft.rawValue] as CFDictionary)
-        try expectEqual(CTFrameGetStringRange(frame).length, (text.content as NSString).length)
-        print("PASS · 中英文多行文字、Core Text 竖排字形与列流")
-        text.vertical = false; text.strokeWidth = 2; text.shadowX = 4; text.shadowY = 5; text.shadowBlur = 3
+        try expect(text.naturalSize.height > text.naturalSize.width)
+        print("PASS · 中英文多行文字、正向字形逐字竖排与列流")
+        text.vertical = false; text.strokeWidth = 2; text.strokeColor = TextColor(0, 0, 0)
+        text.shadowColor = TextColor(0, 0, 0, 0.6); text.shadowX = 4; text.shadowY = 5; text.shadowBlur = 3
         text.backgroundColor = TextColor(0.2, 0.4, 0.8, 0.4); text.cornerRadius = 15; text.padding = 12
         try expect(bytes(try render(text)) != horizontal)
         text.alignment = .right; text.letterSpacing = 3; text.lineSpacing = 8
@@ -65,7 +62,9 @@ struct TextTests {
 
     func testBackgroundCorners() throws {
         var style = TextLayer(); style.content = ""; style.backgroundColor = TextColor(0.2, 0.4, 0.8)
-        try expectEqual(style.cornerRadius, 12)
+        try expectEqual(style.cornerRadius, 0)
+        try expectEqual(bytes(try render(style))[3], 255)
+        style.cornerRadius = 12
         let rounded = bytes(try render(style))
         try expectEqual(rounded[3], 0)
         try expectEqual(rounded[(130 * 360 + 180) * 4 + 3], 255)
@@ -81,6 +80,6 @@ struct TextTests {
         let restored = try JSONDecoder().decode(TextLayer.self, from: JSONEncoder().encode(style))
         try expectEqual(restored.cornerRadius, 80)
         try expectEqual(bytes(try render(restored)), bytes(try render(style)))
-        print("PASS · 文字背景默认圆角、可调半径/直角实际透明像素、缩放和旧项目圆角保留")
+        print("PASS · 文字背景默认直角、可调半径/直角实际透明像素、缩放和旧项目圆角保留")
     }
 }

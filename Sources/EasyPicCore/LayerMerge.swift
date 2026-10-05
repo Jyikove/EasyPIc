@@ -4,14 +4,15 @@ import CoreGraphics
 public enum LayerMergeMode {
     case down(UUID)
     case visible
+    case all
 }
 
 public enum LayerMergeFailure: LocalizedError {
     case invalidSelection, insufficientVisibleLayers
     public var errorDescription: String? {
         switch self {
-        case .invalidSelection: return "请选择可见图层；向下合并时，下方图层也需要可见。"
-        case .insufficientVisibleLayers: return "至少需要两个可见图层才能合并。"
+        case .invalidSelection: return L10n.text("请选择可见图层；向下合并时，下方图层也需要可见。")
+        case .insufficientVisibleLayers: return L10n.text("至少需要两个可见图层才能合并。")
         }
     }
 }
@@ -32,6 +33,10 @@ extension DocumentEngine {
             indices = document.layers.indices.filter { document.layers[$0].visible }
             guard indices.count >= 2 else { throw LayerMergeFailure.insufficientVisibleLayers }
             includesBase = false
+        case .all:
+            guard !document.layers.isEmpty else { throw LayerMergeFailure.invalidSelection }
+            indices = Array(document.layers.indices)
+            includesBase = true
         }
         let size = document.size
         var source = document
@@ -53,11 +58,13 @@ extension DocumentEngine {
         if includesBase {
             next.baseResourceID = resourceID; next.originalSize = size
             next.operations = []; next.baseStrokes = nil
-            next.layers.removeFirst(); next.activeLayerID = nil
+            if case .all = mode { next.layers = [] }
+            else { next.layers.removeFirst() }
+            next.activeLayerID = nil
         } else {
             let bounds = mergedBounds(source.layers, canvas: size)
             image = try ImageEngine.render(image, operations: [.crop(bounds)])
-            let merged = StickerLayer(resourceID: resourceID, name: "合并图层",
+            let merged = StickerLayer(resourceID: resourceID, name: L10n.text("合并图层"),
                 center: CGPoint(x: bounds.midX, y: bounds.midY), size: bounds.size)
             let included = Set(indices)
             let top = indices.last!

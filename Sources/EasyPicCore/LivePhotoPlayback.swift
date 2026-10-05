@@ -100,7 +100,7 @@ public final class LivePhotoPlayback: ObservableObject {
             while !Task.isCancelled {
                 guard let self, self.generation == token, self.player.currentItem === item else { return }
                 if item.status == .failed {
-                    self.error = item.error?.localizedDescription ?? "动态照片播放失败。"
+                    self.error = item.error?.localizedDescription ?? L10n.text("动态照片播放失败。")
                     self.pause(); return
                 }
                 let time = self.player.currentTime()

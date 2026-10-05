@@ -3,37 +3,75 @@ import AppKit
 import EasyPicCore
 import AVFoundation
 
-private let accent = Color(red: 0.93, green: 0.73, blue: 0.43)
+private let accent = EasyPicGlass.accent
 
 struct EditorView: View {
+    @EnvironmentObject private var languageSettings: AppLanguageSettings
     @ObservedObject var model: EditorModel
     let delegate: AppDelegate
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var dropTarget = false
+    @State private var toolbarBottomSpacing: CGFloat = 0
+    @State private var sidebarWidth: CGFloat = 0
+    @StateObject private var sidebarLayout = SidebarWindowSizer(minimumWidth: SidebarWindowSizer.minimumViewerWidth)
+    private let windowInset: CGFloat = 12
+    private let minimumWindowWidth = SidebarWindowSizer.minimumViewerWidth
 
     var body: some View {
-        HStack(spacing: 12) {
-            canvas
-            if model.image != nil {
-                if model.sidePanel == .thumbnails {
-                    FolderPreviewPanel(model: model)
-                } else if model.sidePanel == .text {
-                    TextRecognitionPanel(model: model)
-                } else if model.sidePanel == .edit {
-                    EditingSidebar(model: model)
+        let _ = languageSettings.language
+        GeometryReader { geometry in
+            let panelWidth = model.image != nil && model.sidePanel != nil ? sidebarWidth : 0
+            let canvasWidth = sidebarLayout.viewportWidth ?? max(1, geometry.size.width - panelWidth)
+            ZStack(alignment: .topLeading) {
+            canvas.frame(width: canvasWidth, height: geometry.size.height)
+                .transaction { $0.animation = nil }
+            if model.image != nil, model.sidePanel != nil {
+                ZStack {
+                    if model.sidePanel == .thumbnails {
+                        FolderPreviewPanel(model: model)
+                            .transition(.opacity)
+                    } else if model.sidePanel == .text {
+                        TextRecognitionPanel(model: model)
+                            .transition(.opacity)
+                    } else if model.sidePanel == .edit {
+                        EditingSidebar(model: model)
+                            .transition(.opacity)
+                    }
                 }
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.preference(key: SidebarWidthPreference.self, value: geometry.size.width)
+                    }
+                }
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(height: geometry.size.height)
+                .offset(x: canvasWidth + 12)
+                .transition(EasyPicMotion.sidebarTransition(reduced: reduceMotion))
             }
+            }
+            .animation(EasyPicMotion.panelAnimation(reduced: reduceMotion), value: model.sidePanel)
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
         }
-        .padding(12)
-        .frame(minWidth: 850, minHeight: 600)
+        .disabled(showingDialog).allowsHitTesting(!showingDialog)
+        .padding(.horizontal, windowInset)
+        .padding(.bottom, windowInset)
+        .padding(.top, windowInset - toolbarBottomSpacing)
+        .frame(minWidth: minimumWindowWidth, minHeight: 600, alignment: .topLeading)
+        .onPreferenceChange(SidebarWidthPreference.self) { width in
+            sidebarWidth = width > 0 ? width + 12 : 0
+        }
         .toolbar {
-            ToolbarItemGroup(placement: .navigation) {
-                toolbarButton("上一张", "chevron.left", disabled: !model.canNavigatePrevious) { model.navigate(-1) }
-                toolbarButton("下一张", "chevron.right", disabled: !model.canNavigateNext) { model.navigate(1) }
-                toolbarButton("预览", "square.grid.2x2", disabled: model.image == nil || !model.canSwitchPanel, selected: model.sidePanel == .thumbnails) { model.togglePanel(.thumbnails) }
-                toolbarButton("提取文本", "text.viewfinder", disabled: model.image == nil || !model.canSwitchPanel, selected: model.sidePanel == .text) { model.togglePanel(.text) }
-                toolbarButton("逆时针旋转 90°", "arrow.counterclockwise", disabled: !model.canTransform || model.brushMode) { model.apply(.counterclockwise) }
-                toolbarButton("编辑", "pencil.tip", disabled: !model.canPerformEditorActions, selected: model.sidePanel == .edit) { model.toggleEditor() }
+            ToolbarItem(placement: .principal) {
+                HStack(spacing: 12) {
+                toolbarButton(L10n.text("上一张"), "chevron.left", disabled: !model.canNavigatePrevious) { model.navigate(-1) }
+                toolbarButton(L10n.text("下一张"), "chevron.right", disabled: !model.canNavigateNext) { model.navigate(1) }
+                toolbarButton(L10n.text("预览"), "square.grid.2x2", disabled: model.image == nil || !model.canSwitchPanel, selected: model.sidePanel == .thumbnails) { model.togglePanel(.thumbnails) }
+                toolbarButton(L10n.text("提取文本"), "text.viewfinder", disabled: model.image == nil || !model.canSwitchPanel, selected: model.sidePanel == .text) { model.togglePanel(.text) }
+                toolbarButton(L10n.text("逆时针旋转 90°"), "arrow.counterclockwise", disabled: !model.viewerControlsEnabled || !model.canTransform || model.brushMode) { model.apply(.counterclockwise) }
+                toolbarButton(L10n.text("编辑"), "pencil.tip", disabled: !model.canPerformEditorActions, selected: model.sidePanel == .edit) { model.toggleEditor() }
+                }
+                .background(ToolbarSpacingReader { toolbarBottomSpacing = $0 })
             }
         }
         .toolbar(removing: .title)
@@ -46,14 +84,9 @@ struct EditorView: View {
         .onChange(of: model.fileURL) { _, _ in model.recognizeText() }
         .onChange(of: model.cropping) { _, cropping in if cropping { model.sidePanel = .edit } }
         .onChange(of: model.brushMode) { _, painting in if painting { model.sidePanel = .edit } }
-        .background {
-            ZStack {
-                WindowMaterial()
-                LinearGradient(colors: [Color(red: 0.13, green: 0.16, blue: 0.2).opacity(0.86), Color(red: 0.07, green: 0.08, blue: 0.1).opacity(0.91)], startPoint: .topLeading, endPoint: .bottomTrailing)
-                RadialGradient(colors: [accent.opacity(0.09), .clear], center: .topLeading, startRadius: 10, endRadius: 650)
-            }.ignoresSafeArea()
-        }
+        .glassWindowBackground()
         .background(WindowBridge(delegate: delegate))
+        .background(SidebarWindowBridge(sizer: sidebarLayout, sidebarWidth: sidebarWidth))
         .preferredColorScheme(.dark)
         .tint(accent)
         .onDrop(of: [.fileURL], isTargeted: $dropTarget) { providers in
@@ -67,61 +100,95 @@ struct EditorView: View {
             if model.livePhoto != nil { LivePhotoExportView(model: model) }
             else { ExportView(model: model) }
         }
-        .alert("操作未完成", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
-            Button("好") { model.error = nil }
-        } message: { Text(model.error ?? "") }
+        .overlay {
+            ZStack { dialogOverlay }
+                .allowsHitTesting(showingDialog)
+                .animation(EasyPicMotion.popupAnimation(reduced: reduceMotion), value: dialogKind)
+        }
+    }
+    private var showingDialog: Bool {
+        model.error != nil || model.pendingOriginalReplacement != nil || model.confirmingEditorExit
+    }
+    private var dialogKind: String? {
+        if model.error != nil { return "error" }
+        if model.pendingOriginalReplacement != nil { return "replace" }
+        return model.confirmingEditorExit ? "exit" : nil
+    }
+    @ViewBuilder private var dialogOverlay: some View {
+        if showingDialog {
+            ZStack {
+                Color.black.opacity(0.28).ignoresSafeArea().contentShape(Rectangle()).onTapGesture { }
+                if let error = model.error {
+                    GlassDialog(title: L10n.text("操作未完成"), message: L10n.display(error), icon: "exclamationmark.triangle") {
+                        Button(L10n.text("好")) { model.error = nil }
+                            .buttonStyle(GlassButtonStyle(prominent: true)).keyboardShortcut(.defaultAction)
+                    }
+                    .glassPopupTransition()
+                } else if let target = model.pendingOriginalReplacement {
+                    GlassDialog(title: L10n.text("替换原图？"),
+                                message: L10n.text("将用当前编辑结果替换“{0}”。是否继续？", target.lastPathComponent)) {
+                        VStack(spacing: 8) {
+                            Button(L10n.text("保存并替换原图"), action: model.confirmOriginalReplacement)
+                                .buttonStyle(GlassButtonStyle(destructive: true)).keyboardShortcut(.defaultAction)
+                            Button(L10n.text("取消"), action: model.cancelOriginalReplacement)
+                                .buttonStyle(GlassButtonStyle()).keyboardShortcut(.cancelAction)
+                        }
+                    }
+                    .glassPopupTransition()
+                } else {
+                    GlassDialog(title: L10n.text("退出编辑？"), message: L10n.text("保存更改后退出？")) {
+                        VStack(spacing: 8) {
+                            Button(L10n.text(model.editorExitUsesReplacement ? "保存并替换原图" : "另存为"), action: model.saveAndExitEditor)
+                                .buttonStyle(GlassButtonStyle(prominent: true)).keyboardShortcut(.defaultAction)
+                            Button(L10n.text("不保存"), action: model.discardEditorSession)
+                                .buttonStyle(GlassButtonStyle(destructive: true))
+                            Button(L10n.text("取消"), action: model.cancelEditorExit)
+                                .buttonStyle(GlassButtonStyle()).keyboardShortcut(.cancelAction)
+                        }
+                    }
+                    .glassPopupTransition()
+                }
+            }
+            .transition(.opacity)
+        }
     }
 
     private func toolbarButton(_ title: String, _ icon: String, disabled: Bool, selected: Bool = false, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Label(title, systemImage: icon) }
-            .labelStyle(.iconOnly).help(title).accessibilityLabel(title)
+        Button(action: action) { Label(title, systemImage: icon).frame(width: 32, height: 28).contentShape(Rectangle()) }
+            .buttonStyle(GlassButtonStyle(selected: selected, radius: 9, horizontalPadding: 0, verticalPadding: 0))
+            .labelStyle(.iconOnly).quickHelp(title).accessibilityLabel(title)
             .foregroundStyle(selected ? accent : .primary)
             .disabled(disabled)
     }
 
     private var canvas: some View {
         ZStack {
-            Color.black.opacity(0.18)
+            Color.clear
             if let image = model.image {
                 ImageCanvas(model: model, image: image)
             } else {
                 VStack(spacing: 18) {
                     Image(systemName: "photo.on.rectangle.angled")
                         .font(.system(size: 48, weight: .ultraLight)).foregroundStyle(.tertiary)
-                    Button("打开图片", action: model.openPanel).buttonStyle(.glassProminent).tint(accent).controlSize(.large)
+                    Button(L10n.text("打开图片"), action: model.openPanel).buttonStyle(GlassButtonStyle(prominent: true)).tint(accent).controlSize(.large)
                 }
             }
-            if model.busy {
-                VStack(spacing: 10) { ProgressView(); Text("处理中…").font(.caption) }
-                    .padding(24).glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18))
-            }
         }
+        .glassSurface(.canvas, radius: 22)
         .clipShape(RoundedRectangle(cornerRadius: 22))
-        .overlay(RoundedRectangle(cornerRadius: 22).strokeBorder(dropTarget ? accent : Color.white.opacity(0.1), lineWidth: dropTarget ? 2 : 1))
+        .overlay(RoundedRectangle(cornerRadius: 22).strokeBorder(dropTarget ? accent : .clear, lineWidth: dropTarget ? 2 : 1))
     }
 
-}
-
-struct EditFileControls: View {
-    @ObservedObject var model: EditorModel
-    var body: some View {
-        HStack {
-            if model.livePhoto == nil {
-                Button("保存项目", action: model.saveFromEditor).disabled(!model.canPerformEditorActions || model.cropping)
-            }
-            Spacer(minLength: 0)
-            Button("导出", action: model.exportFromEditor).disabled(!model.canPerformEditorActions || model.cropping)
-        }
-        .buttonStyle(.glass).controlSize(.small)
-    }
 }
 
 struct ImageCanvas: View {
+    @EnvironmentObject private var languageSettings: AppLanguageSettings
     @ObservedObject var model: EditorModel
     let image: CGImage
     @State private var panOffset: CGSize = .zero
 
     var body: some View {
+        let _ = languageSettings.language
         GeometryReader { geometry in
             let available = CGSize(width: max(1, geometry.size.width - 56), height: max(1, geometry.size.height - 56))
             let fit = min(available.width / Double(image.width), available.height / Double(image.height))
@@ -138,8 +205,7 @@ struct ImageCanvas: View {
                     } else {
                         Image(decorative: model.documentPreview ?? image, scale: 1).resizable().interpolation(.high).frame(width: size.width, height: size.height)
                     }
-                    if model.aiSelecting { AISelectionOverlay(model:model,scale:scale,size:size) }
-                    else if model.cropping { CropOverlay(model: model, size: size, scale: scale) }
+                    if model.cropping { CropOverlay(model: model, size: size, scale: scale) }
                     else if model.brushMode { BrushOverlay(model:model,scale:scale,size:size) }
                     else if model.sidePanel == .edit && (model.activeEditorTool == .sticker || model.activeEditorTool == .text) && model.livePhoto == nil && !model.isReadOnly { LayerCanvasOverlay(model: model, scale: scale, size: size) }
                 }
@@ -163,6 +229,8 @@ struct ImageCanvas: View {
                 }
             })
             .clipped()
+            .onAppear { model.brushCanvasScale = scale }
+            .onChange(of: scale) { _, scale in model.brushCanvasScale = scale }
             .onChange(of: model.fileURL) { _, _ in panOffset = .zero }
             .onChange(of: model.viewportReset) { _, _ in panOffset = .zero }
         }
@@ -183,37 +251,43 @@ struct ImageCanvas: View {
 }
 
 struct AnimatedFrameView: View {
+    @EnvironmentObject private var languageSettings: AppLanguageSettings
     @ObservedObject var playback: ImagePlayback
     let poster: CGImage
     var body: some View {
+        let _ = languageSettings.language
         Image(decorative: playback.frame ?? poster, scale: 1).resizable().interpolation(.high)
     }
 }
 
 struct ExportView: View {
+    @EnvironmentObject private var languageSettings: AppLanguageSettings
     @ObservedObject var model: EditorModel
     var body: some View {
+        let _ = languageSettings.language
         VStack(alignment: .leading, spacing: 24) {
-            HStack { Image(systemName: "square.and.arrow.down.on.square").foregroundStyle(accent); Text("另存为").font(.title2.weight(.medium)) }
-            Text("按当前图片的完整像素尺寸导出。缩放比例不影响导出质量。").font(.system(size: 12)).foregroundStyle(.secondary)
-            HStack { Text("格式"); Spacer(); Picker("格式", selection: $model.exportFormat) { Text("PNG").tag(ExportFormat.png); Text("JPG").tag(ExportFormat.jpg) }.labelsHidden().pickerStyle(.segmented).frame(width: 190) }
-            HStack { Text("尺寸"); Spacer(); Text(model.dimensions + " px").monospaced() }
+            HStack { Image(systemName: "square.and.arrow.down.on.square").foregroundStyle(accent); Text(L10n.text("另存为")).font(.title2.weight(.medium)) }
+            Text(L10n.text("按当前图片的完整像素尺寸导出。缩放比例不影响导出质量。")).font(.system(size: 12)).foregroundStyle(.secondary)
+            HStack { Text(L10n.text("格式")); Spacer(); GlassSegmentedPicker(selection: $model.exportFormat, options: [("PNG", .png), ("JPG", .jpg)]).frame(width: 190).accessibilityLabel(L10n.text("格式")) }
+            HStack { Text(L10n.text("尺寸")); Spacer(); Text(model.dimensions + " px").monospaced() }
             if model.exportFormat == .jpg {
                 VStack(alignment: .leading, spacing: 10) {
-                    HStack { Text("质量"); Spacer(); Text("\(Int(model.jpegQuality * 100))%").monospaced() }
-                    Slider(value: $model.jpegQuality, in: 0.1...1)
-                    Text("透明区域会填充白色背景。").font(.caption).foregroundStyle(.secondary)
+                    HStack { Text(L10n.text("质量")); Spacer(); Text("\(Int(model.jpegQuality * 100))%").monospaced() }
+                    GlassSlider(value: $model.jpegQuality, in: 0.1...1)
+                    Text(L10n.text("透明区域会填充白色背景。")).font(.caption).foregroundStyle(.secondary)
                 }
-            } else { Text("无损导出，保留透明区域。").font(.caption).foregroundStyle(.secondary) }
+            } else { Text(L10n.text("无损导出，保留透明区域。")).font(.caption).foregroundStyle(.secondary) }
             HStack {
-                Button("取消", action: model.cancelExport).keyboardShortcut(.cancelAction).buttonStyle(.glass).tint(.clear)
+                Button(L10n.text("取消"), action: model.cancelExport).keyboardShortcut(.cancelAction).buttonStyle(GlassButtonStyle())
                 Spacer()
                 if model.busy { ProgressView().controlSize(.small) }
-                Button("选择保存位置…", action: model.export).keyboardShortcut(.defaultAction).buttonStyle(.glassProminent)
+                Button(L10n.text("选择保存位置…"), action: model.export).keyboardShortcut(.defaultAction).buttonStyle(GlassButtonStyle(prominent: true))
             }
         }
         .font(.system(size: 13))
         .padding(30).frame(width: 400)
+        .glassSurface(.floating, radius: 24).glassWindowBackground().presentationBackground(.clear)
+        .glassEntrance()
         .preferredColorScheme(.dark).tint(accent)
         .disabled(model.busy || model.choosingExportLocation)
         .interactiveDismissDisabled()
@@ -221,56 +295,64 @@ struct ExportView: View {
 }
 
 struct LivePhotoCoverControls: View {
+    @EnvironmentObject private var languageSettings: AppLanguageSettings
     @ObservedObject var model: EditorModel
     @ObservedObject var playback: LivePhotoPlayback
     var body: some View {
+        let _ = languageSettings.language
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Button(action: playback.toggle) { Label(playback.isPlaying ? "暂停" : "播放", systemImage: playback.isPlaying ? "pause.fill" : "play.fill") }
-                Button(action: playback.restart) { Image(systemName: "backward.end.fill") }.help("从头播放")
-            }.buttonStyle(.glass)
-            Toggle("静音", isOn: $playback.muted).font(.system(size: 12))
+                Button(action: playback.toggle) { Label(playback.isPlaying ? L10n.text("暂停") : L10n.text("播放"), systemImage: playback.isPlaying ? "pause.fill" : "play.fill") }
+                Button(action: playback.restart) { Image(systemName: "backward.end.fill") }.quickHelp(L10n.text("从头播放"))
+            }.buttonStyle(GlassButtonStyle())
+            Toggle(L10n.text("静音"), isOn: $playback.muted).toggleStyle(GlassToggleStyle()).font(.system(size: 12))
             if let live = model.livePhoto {
-                Slider(value: Binding(get: { playback.position }, set: { playback.seek($0) }), in: 0...max(0.001, live.lastFrameTime))
-                    .accessibilityLabel("Live Photo 封面时间")
-                Text(String(format: "%.2f / %.2f 秒", playback.position, live.duration)).font(.system(size: 11, design: .monospaced))
+                GlassSlider(value: Binding(get: { playback.position }, set: { playback.seek($0) }), in: 0...max(0.001, live.lastFrameTime))
+                    .accessibilityLabel(L10n.text("Live Photo 封面时间"))
+                Text(String(format: L10n.text("%.2f / %.2f 秒"), playback.position, live.duration)).font(.system(size: 11, design: .monospaced))
             }
-            Button("将当前帧设为封面", action: model.setLiveCover).buttonStyle(.glassProminent).tint(accent)
-            Button("查看封面", action: playback.showCover).buttonStyle(.glass)
-            Button("恢复原始封面", action: model.restoreLiveCover).buttonStyle(.glass).disabled(model.liveHistory.edits.coverTime == nil)
-            if let error = playback.error { Text(error).font(.caption).foregroundStyle(.red) }
+            Button(L10n.text("将当前帧设为封面"), action: model.setLiveCover).buttonStyle(GlassButtonStyle(prominent: true)).tint(accent)
+            Button(L10n.text("查看封面"), action: playback.showCover).buttonStyle(GlassButtonStyle())
+            Button(L10n.text("恢复原始封面"), action: model.restoreLiveCover).buttonStyle(GlassButtonStyle()).disabled(model.liveHistory.edits.coverTime == nil)
+            if let error = playback.error { Text(L10n.display(error)).font(.caption).foregroundStyle(.red) }
         }
         .disabled(!model.canEdit)
     }
 }
 
 struct LivePhotoFrameView: View {
+    @EnvironmentObject private var languageSettings: AppLanguageSettings
     @ObservedObject var playback: LivePhotoPlayback
     let poster: CGImage
     var body: some View {
+        let _ = languageSettings.language
         Image(decorative: playback.showingMotion ? (playback.frame ?? poster) : poster, scale: 1)
             .resizable().interpolation(.high)
     }
 }
 
 struct LivePhotoExportView: View {
+    @EnvironmentObject private var languageSettings: AppLanguageSettings
     @ObservedObject var model: EditorModel
     var body: some View {
+        let _ = languageSettings.language
         VStack(alignment: .leading, spacing: 20) {
-            Label("导出 Live Photo", systemImage: "livephoto").font(.title2.weight(.medium))
-            Text("创建新的配对文件夹，包含 LivePhoto.JPG 和 LivePhoto.MOV。照片与视频同步裁剪，保留声音，并记录所选封面的时间。")
-            Text("可直接在 EasyPic 中重新打开导出的 JPG 或 MOV。向 Apple“照片”导入时，请同时选择这两个文件。")
+            Label(L10n.text("导出 Live Photo"), systemImage: "livephoto").font(.title2.weight(.medium))
+            Text(L10n.text("创建新的配对文件夹，包含 LivePhoto.JPG 和 LivePhoto.MOV。照片与视频同步裁剪，保留声音，并记录所选封面的时间。"))
+            Text(L10n.text("可直接在 EasyPic 中重新打开导出的 JPG 或 MOV。向 Apple“照片”导入时，请同时选择这两个文件。"))
                 .foregroundStyle(.secondary)
-            Text("MOV 使用 H.264 编码；照片为 JPG。当前输出为 SDR，不保留原始 HEVC/HDR 编码。")
+            Text(L10n.text("MOV 使用 H.264 编码；照片为 JPG。当前输出为 SDR，不保留原始 HEVC/HDR 编码。"))
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
-                Button("取消", action: model.cancelExport).keyboardShortcut(.cancelAction).buttonStyle(.glass)
+                Button(L10n.text("取消"), action: model.cancelExport).keyboardShortcut(.cancelAction).buttonStyle(GlassButtonStyle())
                 Spacer()
                 if model.busy { ProgressView().controlSize(.small) }
-                Button("选择保存位置…", action: model.export).keyboardShortcut(.defaultAction).buttonStyle(.glassProminent)
+                Button(L10n.text("选择保存位置…"), action: model.export).keyboardShortcut(.defaultAction).buttonStyle(GlassButtonStyle(prominent: true))
             }
         }
         .font(.system(size: 13)).padding(30).frame(width: 440)
+        .glassSurface(.floating, radius: 24).glassWindowBackground().presentationBackground(.clear)
+        .glassEntrance()
         .preferredColorScheme(.dark).tint(accent)
         .disabled(model.busy || model.choosingExportLocation).interactiveDismissDisabled()
     }

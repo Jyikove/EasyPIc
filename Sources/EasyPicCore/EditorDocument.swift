@@ -5,7 +5,6 @@ import CoreGraphics
 public struct StickerLayer: Codable, Equatable, Identifiable {
     public var id = UUID()
     public var resourceID: UUID
-    public var aiPrompt: String? = nil
     public var strokes: [BrushStroke]? = nil
     public var text: TextLayer? = nil
     public var name: String

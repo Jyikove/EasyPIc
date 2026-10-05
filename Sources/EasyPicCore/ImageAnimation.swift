@@ -3,7 +3,14 @@ import ImageIO
 import Combine
 
 public enum AnimationFormat: String, Sendable {
-    case gif = "GIF", apng = "APNG", webP = "动态 WebP", heics = "HEIC 序列"
+    case gif = "GIF", apng = "APNG", webP = "Animated WebP", heics = "HEIC Sequence"
+    public var title: String {
+        switch self {
+        case .webP: return L10n.text("动态 WebP")
+        case .heics: return L10n.text("HEIC 序列")
+        default: return rawValue
+        }
+    }
 }
 
 public struct AnimationMetadata: Sendable {
@@ -148,7 +155,7 @@ public final class ImagePlayback: ObservableObject {
                 catch {
                     guard let self, self.generation == token else { return }
                     self.isPlaying = false
-                    self.error = "动图播放失败：" + error.localizedDescription
+                    self.error = L10n.text("动图播放失败：") + error.localizedDescription
                     return
                 }
             }

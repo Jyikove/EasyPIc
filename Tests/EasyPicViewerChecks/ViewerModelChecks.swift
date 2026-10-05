@@ -142,7 +142,7 @@ struct ViewerModelChecks {
         let rendered = try DocumentEngine.render(committed, resources: text.resources)
         try expect(rendered.width == text.image?.width && text.documentPreview != nil, "文字切换后未完成图片渲染")
         text.chooseEditorTool(.undo); try await wait { !text.busy }
-        try expect(text.document?.layers.first == initial && !text.brushMode, "文字预览修改没有合为一个撤销步骤")
+        try expect(text.document?.layers.first == initial && text.brushMode && text.activeEditorTool == .mosaic, "文字预览修改撤销未恢复文档或保留马赛克面板")
         text.chooseEditorTool(.redo); try await wait { !text.busy }
         try expect(text.document == committed, "文字重做丢失样式或位置")
         text.chooseEditorTool(.text)
@@ -154,25 +154,14 @@ struct ViewerModelChecks {
         text.editText()
         var closing = text.selectedLayer!; closing.text?.content = "收起时保存"
         text.updateLayer(closing, commit: false); text.toggleEditor()
-        try await wait { !text.busy && text.sidePanel == nil }
-        try expect(text.document?.layers.first?.text?.content == "收起时保存" && text.pendingEditorAction == nil, "关闭编辑栏丢失文字草稿")
+        try expect(text.confirmingEditorExit && text.sidePanel == .edit && text.textEditing, "退出编辑未先询问保存")
+        text.cancelEditorExit()
+        try expect(text.draftLayer?.text?.content == "收起时保存" && text.sidePanel == .edit, "取消退出丢失了文字草稿")
+        text.toggleEditor(); text.discardEditorSession()
+        try expect(text.sidePanel == nil && text.document?.layers.isEmpty == true && !text.textEditing && text.canBrowse,
+                   "放弃退出未恢复本次编辑之前的图片")
         text.playback.clear()
-        print("PASS · 文字自动进入详情、实时草稿、切换/收起提交、整步撤销和非法设置保护")
-
-        let ai = try await loaded(photo)
-        ai.chooseEditorTool(.ai)
-        try expect(ai.activeEditorTool == .ai && ai.sidePanel == .edit && ai.aiTask == nil && !ai.aiRunning, "展开 AI 意外启动任务")
-        ai.aiResult = ai.image; ai.aiSelecting = true
-        try expect(!ai.toolEnabled(.horizontal) && !ai.canBrowse, "AI 选区时其他工具没有锁定")
-        ai.aiSelecting = false; ai.chooseEditorTool(.sticker)
-        try expect(ai.aiResult != nil && ai.activeEditorTool == .sticker, "切换详情丢失未应用的 AI 结果")
-        ai.aiRunning = true; ai.open(folder.appendingPathComponent("RotatedSample.jpg"))
-        try expect(!ai.canBrowse && !ai.toolEnabled(.crop) && ai.fileURL == photo && !ai.busy, "运行中的 AI 没有保护当前文档")
-        ai.aiRunning = false; ai.open(folder.appendingPathComponent("RotatedSample.jpg"))
-        try await wait { !ai.busy && ai.fileURL != photo }
-        try expect(ai.aiResult == nil && ai.aiSelection == nil && ai.activeEditorTool == nil, "换图后保留了旧 AI 结果或详情")
-        ai.playback.clear()
-        print("PASS · AI 详情只展开、选区/任务保护、隐藏保留结果与换图清理")
+        print("PASS · 文字草稿、切换提交、整步撤销、退出确认/取消/放弃和非法设置保护")
 
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let readonly = try await loaded(root.appendingPathComponent("Tests/EasyPicCoreTests/Fixtures/Animated.gif"))
@@ -182,13 +171,13 @@ struct ViewerModelChecks {
         try expect(CommandLine.arguments.count == 2, "缺少 Live Photo 合成样本目录")
         let live = try await loaded(URL(fileURLWithPath: CommandLine.arguments[1]).appendingPathComponent("Portrait.JPG"))
         try expect(live.livePhoto != nil && live.toolEnabled(.crop), "Live Photo 未启用裁剪")
-        try expect([EditorTool.horizontal, .vertical, .rotate, .sticker, .text, .solid, .mosaic, .repair, .ai].allSatisfy { !live.toolEnabled($0) }, "Live Photo 启用了不支持的编辑")
+        try expect([EditorTool.horizontal, .vertical, .rotate, .sticker, .text, .solid, .mosaic, .repair].allSatisfy { !live.toolEnabled($0) }, "Live Photo 启用了不支持的编辑")
         live.toggleEditor(); live.chooseEditorTool(.crop); live.cancelCrop()
         try expect(live.activeEditorTool == .crop && live.canEdit, "取消裁剪未保留封面工具入口")
         live.playback.clear(); live.livePlayback.clear()
         print("PASS · GIF 保持只读播放、Live Photo 仅启用裁剪和封面相关工具")
         try await CropChecks.run(photo: photo, liveURL: URL(fileURLWithPath: CommandLine.arguments[1]).appendingPathComponent("Portrait.JPG"))
         try await SaveChecks.run(photo: photo)
-        print("17 项查看器与编辑工具模型验证通过")
+        print("16 项查看器与编辑工具模型验证通过")
     }
 }

@@ -25,6 +25,14 @@ enum SaveChecks {
         var draft = model.selectedLayer!; draft.text?.content = "保存原图"; draft.size = draft.text!.naturalSize
         model.updateLayer(draft, commit: false)
         model.chooseEditorTool(.replaceOriginal)
+        try await ViewerModelChecks.wait { model.pendingOriginalReplacement != nil }
+        let beforeConfirmation = try Data(contentsOf: png)
+        try expect(beforeConfirmation == original && model.dirty && !model.canBrowse, "确认前改写了原图或未阻止切图")
+        model.cancelOriginalReplacement()
+        let afterCancellation = try Data(contentsOf: png)
+        try expect(afterCancellation == original && model.document?.layers.count == 1 && model.dirty, "取消确认改写了原图或合并了图层")
+        model.chooseEditorTool(.replaceOriginal)
+        model.confirmOriginalReplacement()
         try await ViewerModelChecks.wait { !model.busy && !model.textEditing && !model.dirty }
         try expect(model.error == nil && model.activeEditorTool == nil, "替换原图失败或打开了二级窗口")
         let saved = try ImageEngine.load(png)
@@ -34,15 +42,22 @@ enum SaveChecks {
         try expect(saved.image.width == rendered.width && saved.image.height == rendered.height, "保存原图没有使用完整像素尺寸")
         let difference = zip(pixels(saved.image), pixels(rendered)).map { abs(Int($0) - Int($1)) }.max() ?? 0
         try expect(difference <= 2, "保存原图合成像素不一致，最大差值：\(difference)")
-        try expect(model.canUndo && model.document?.layers.count == 1, "保存丢失了当前编辑图层或历史")
+        try expect(model.canUndo && model.document?.layers.isEmpty == true && model.selectedLayerID == nil,
+                   "保存后没有合并图层或丢失了撤销历史")
+        model.chooseEditorTool(.undo); try await ViewerModelChecks.wait { !model.busy }
+        try expect(model.document?.layers.count == 1 && model.dirty, "撤销未恢复保存前的文字图层")
+        model.chooseEditorTool(.redo); try await ViewerModelChecks.wait { !model.busy }
+        try expect(model.document?.layers.isEmpty == true && !model.dirty, "重做未恢复已保存的合并图层")
         model.playback.clear()
-        print("PASS · 一级保存按钮提交文字草稿、完整合成、同路径 PNG 替换与历史保留")
+        print("PASS · 保存确认/取消保护原图，PNG 成功保存后合并，撤销/重做恢复图层")
 
         let jpg = folder.appendingPathComponent("Source.jpg")
         try ImageEngine.encode(ImageEngine.load(photo).image, format: .jpg).write(to: jpg)
         let jpeg = try await ViewerModelChecks.loaded(jpg)
         jpeg.chooseEditorTool(.rotate); try await ViewerModelChecks.wait { !jpeg.busy }
-        jpeg.chooseEditorTool(.replaceOriginal); try await ViewerModelChecks.wait { !jpeg.busy }
+        jpeg.chooseEditorTool(.replaceOriginal)
+        try expect(jpeg.pendingOriginalReplacement == jpg, "JPG 保存没有请求确认")
+        jpeg.confirmOriginalReplacement(); try await ViewerModelChecks.wait { !jpeg.busy }
         let updated = try ImageEngine.load(jpg)
         try expect(jpeg.error == nil && !jpeg.dirty && updated.typeIdentifier == "public.jpeg" && updated.image.width == 360 && updated.image.height == 960, "替换 JPG 修改了格式或没有保存旋转")
         jpeg.chooseEditorTool(.undo); try await ViewerModelChecks.wait { !jpeg.busy }

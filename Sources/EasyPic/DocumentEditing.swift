@@ -3,13 +3,36 @@ import UniformTypeIdentifiers
 import EasyPicCore
 
 extension EditorModel {
+    var canMergeAll: Bool {
+        canPerformEditorActions && !cropping && !brushMode &&
+            (!(document?.layers.isEmpty ?? true) || hasTextDraftChanges)
+    }
+    func mergeAllLayers() {
+        guard canMergeAll else { return }
+        finishInlineText { [weak self] in
+            guard let self, self.canMergeAll, let doc = self.document else { return }
+            let assets = self.resources, tool = self.activeEditorTool
+            self.busy = true
+            Task { [self] in
+                do {
+                    let merged = try await Task.detached(priority: .userInitiated) {
+                        try DocumentEngine.merge(doc, resources: assets, mode: .all)
+                    }.value
+                    self.resources[merged.resourceID] = merged.image
+                    self.selectedLayerID = nil
+                    if tool == .text { self.pendingEditorAction = { [weak self] in self?.beginTextEditing() } }
+                    self.commitDocument(merged.document)
+                } catch { self.error = error.localizedDescription; self.busy = false }
+            }
+        }
+    }
     var canMergeDown: Bool {
         guard canUseLayers, !brushMode, let doc = document,
               let i = doc.layers.firstIndex(where: { $0.id == selectedLayerID }), doc.layers[i].visible else { return false }
         return i == 0 || doc.layers[i - 1].visible
     }
     var mergeDownTitle: String {
-        document?.layers.first?.id == selectedLayerID ? "与原图合并" : "向下合并"
+        document?.layers.first?.id == selectedLayerID ? L10n.text("与原图合并") : L10n.text("向下合并")
     }
     var canMergeVisible: Bool {
         canUseLayers && !brushMode && (document?.layers.filter(\.visible).count ?? 0) >= 2
@@ -31,8 +54,9 @@ extension EditorModel {
     }
     func importSticker() {
         guard canUseLayers else { return }
+        startEditorSessionIfNeeded()
         sidePanel = .edit; activeEditorTool = .sticker
-        let panel = NSOpenPanel(); panel.allowedContentTypes = [.image]
+        let panel = NSOpenPanel(); EasyPicGlass.prepareFilePanel(panel); panel.allowedContentTypes = [.image]
         choosingOpenLocation = true
         panel.begin { [weak self] response in
             guard let self else { return }; self.choosingOpenLocation = false
@@ -40,19 +64,49 @@ extension EditorModel {
         }
     }
     func importSticker(from url: URL) {
-        guard canUseLayers else { return }
+        importStickers(from: [url])
+    }
+    func importDroppedStickers(_ providers: [NSItemProvider]) -> Bool {
+        guard canUseLayers, activeEditorTool == .sticker else { return false }
+        let files = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+        guard !files.isEmpty else { return false }
+        let expectedBase = document?.baseResourceID, expectedURL = fileURL
+        Task {
+            var urls: [URL] = []
+            for provider in files {
+                let url: URL? = await withCheckedContinuation { continuation in
+                    _ = provider.loadObject(ofClass: URL.self) { url, _ in continuation.resume(returning: url) }
+                }
+                if let url, url.isFileURL { urls.append(url) }
+            }
+            guard document?.baseResourceID == expectedBase, fileURL == expectedURL,
+                  activeEditorTool == .sticker else { return }
+            importStickers(from: urls)
+        }
+        return true
+    }
+    func importStickers(from urls: [URL]) {
+        guard canUseLayers, !urls.isEmpty else { return }
+        startEditorSessionIfNeeded()
         sidePanel = .edit; activeEditorTool = .sticker
         busy = true
         Task {
             do {
-                let loaded = try await Task.detached { try ImageEngine.load(url) }.value
-                guard !loaded.mediaInfo.isReadOnly else { throw ImageFailure.unreadable }
+                let loaded = try await Task.detached {
+                    try urls.map { url -> (URL, LoadedImage) in
+                        let image = try ImageEngine.load(url)
+                        guard !image.mediaInfo.isReadOnly else { throw ImageFailure.unreadable }
+                        return (url, image)
+                    }
+                }.value
                 guard var doc = document else { busy = false; return }
-                let id = UUID(), size = doc.size
-                resources[id] = loaded.image
-                let ratio = min(1, min(size.width * 0.5 / CGFloat(loaded.image.width), size.height * 0.5 / CGFloat(loaded.image.height)))
-                let layer = StickerLayer(resourceID: id, name: url.lastPathComponent, center: CGPoint(x: size.width / 2, y: size.height / 2), size: CGSize(width: max(1, CGFloat(loaded.image.width) * ratio), height: max(1, CGFloat(loaded.image.height) * ratio)))
-                doc.layers.append(layer); selectedLayerID = layer.id
+                for (url, loaded) in loaded {
+                    let id = UUID(), size = doc.size
+                    resources[id] = loaded.image
+                    let ratio = min(1, min(size.width * 0.5 / CGFloat(loaded.image.width), size.height * 0.5 / CGFloat(loaded.image.height)))
+                    let layer = StickerLayer(resourceID: id, name: url.lastPathComponent, center: CGPoint(x: size.width / 2, y: size.height / 2), size: CGSize(width: max(1, CGFloat(loaded.image.width) * ratio), height: max(1, CGFloat(loaded.image.height) * ratio)))
+                    doc.layers.append(layer); selectedLayerID = layer.id
+                }
                 busy = false; commitDocument(doc)
             } catch { self.error = error.localizedDescription; busy = false }
         }
@@ -74,7 +128,7 @@ extension EditorModel {
                 }.value
                 documentHistory = next; baseImage = base; image = base; documentPreview = preview
                 if !doc.layers.contains(where: { $0.id == selectedLayerID }) { selectedLayerID = nil }
-                cropRect = nil; status = "可编辑图层 · 原图保留"
+                cropRect = nil; status = L10n.text("可编辑图层 · 原图保留")
                 succeeded = true
             } catch { self.error = error.localizedDescription }
             busy = false
@@ -83,8 +137,12 @@ extension EditorModel {
         }
     }
     func updateLayer(_ layer: StickerLayer, commit: Bool) {
-        guard (canUseLayers || textEditing), var doc = document, let i = doc.layers.firstIndex(where: { $0.id == layer.id }) else { return }
-        doc.layers[i] = layer
+        guard (canUseLayers || textEditing), var doc = document else { return }
+        if let i = doc.layers.firstIndex(where: { $0.id == layer.id }) { doc.layers[i] = layer }
+        else {
+            guard textEditing, activeEditorTool == .text, layer.text != nil, draftLayer?.id == layer.id else { return }
+            doc.layers.append(layer)
+        }
         if commit { commitDocument(doc); return }
         draftLayer = layer
         previewTask?.cancel()
@@ -113,7 +171,7 @@ extension EditorModel {
     func saveProject() {
         guard canUseLayers, var doc = document else { return }
         doc.activeLayerID = selectedLayerID
-        let panel = NSSavePanel()
+        let panel = NSSavePanel(); EasyPicGlass.prepareFilePanel(panel)
         panel.allowedContentTypes = [UTType(importedAs: "local.jyikove.easypic.project")]
         panel.nameFieldStringValue = projectURL?.lastPathComponent ?? (fileURL?.deletingPathExtension().lastPathComponent ?? "Untitled") + ".easypic"
         panel.directoryURL = (projectURL ?? fileURL)?.deletingLastPathComponent()
@@ -123,7 +181,7 @@ extension EditorModel {
             guard response == .OK, let url = panel.url else { self.pendingAfterExport = nil; return }
             guard url.pathExtension.lowercased() == "easypic",
                   url.resolvingSymlinksInPath().standardizedFileURL != self.fileURL?.resolvingSymlinksInPath().standardizedFileURL || url == self.projectURL else {
-                self.error = "请使用 .easypic 项目文件名，保留原始图片。"; self.pendingAfterExport = nil; return
+                self.error = L10n.text("请使用 .easypic 项目文件名，保留原始图片。"); self.pendingAfterExport = nil; return
             }
             let assets = self.resources
             self.busy = true
@@ -132,7 +190,8 @@ extension EditorModel {
                     try await Task.detached { try DocumentEngine.save(doc, resources: assets, to: url) }.value
                     // Selection is persisted without making selection alone an edit.
                     self.savedDocument = self.document; self.projectURL = url
-                    self.status = "已保存项目 · " + url.lastPathComponent; self.busy = false
+                    self.checkpointEditorSession()
+                    self.status = L10n.text("已保存项目 · ") + url.lastPathComponent; self.busy = false
                     let continuation = self.pendingAfterExport; self.pendingAfterExport = nil; continuation?()
                 } catch { self.error = error.localizedDescription; self.busy = false; self.pendingAfterExport = nil }
             }
@@ -153,7 +212,7 @@ extension EditorModel {
                 documentHistory = DocumentHistory(doc); savedDocument = doc; projectURL = url; fileURL = url
                 selectedLayerID = doc.activeLayerID; draftLayer = nil
                 browsingFiles = []; zoom = 1; actualSize = false; cropRect = nil
-                status = "项目已打开 · 可继续编辑"
+                status = L10n.text("项目已打开 · 可继续编辑")
             } catch { self.error = error.localizedDescription }
             busy = false
         }

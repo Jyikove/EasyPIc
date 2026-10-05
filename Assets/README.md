@@ -1,7 +1,7 @@
 # EasyPic 图标
 
-`EasyPicIcon.png` 基于用户在 2026-10-04 最后上传并指定的玻璃眼睛图片，通过内置 imagegen 编辑为透明圆角版本。提示词要点：保留眼睛图案与玻璃边缘，去除圆角外背景，不添加文字或新背景。
+`EasyPicIcon.png` 使用用户在 2026-10-05 提供的蓝色玻璃齿轮图标。外部深蓝背景已移除，保留玻璃底板、齿轮、交叉辐条和中央蓝色图案，输出 1254 × 1254 透明 PNG。
 
-`scripts/make-assets.swift` 用 AppKit 缩放并统一裁切透明圆角，生成标准 macOS iconset，构建脚本用 `iconutil` 打包为 `EasyPicIcon.icns`，写入应用资源并通过 Info.plist 和启动时的 applicationIconImage 应用。“关于”窗口直接加载当前图标，避免使用旧的系统图标缓存。
+内置 imagegen 多次直接提取仍存在蓝色碎边，经用户明确允许后，最终使用 `scripts/extract-icon.swift` 从原始图按圆角轮廓提取；没有重绘内部图案。`EasyPicIcon-original.png` 保留原始输入，[IconEditingPrompt.md](IconEditingPrompt.md) 记录完整提示词及处理方式。旧图标备份位于 build/IconBackups。
 
-早先尝试的去边框透明版本已被用户最后上传的图片替代，不作为当前应用图标。
+`scripts/make-assets.swift` 用 AppKit 高质量缩放，保留源 PNG 的透明通道和圆角，不再额外裁切。生成标准 macOS iconset 后，构建脚本用 `iconutil` 打包为 `EasyPicIcon.icns`，写入应用资源并通过 Info.plist 和启动时的 applicationIconImage 应用。“关于”窗口直接加载当前图标。

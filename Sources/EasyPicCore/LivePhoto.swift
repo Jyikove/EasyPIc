@@ -8,10 +8,10 @@ public enum LivePhotoFailure: LocalizedError {
     case missingPair, invalidVideo, invalidEdit, export(String)
     public var errorDescription: String? {
         switch self {
-        case .missingPair: return "未找到标识匹配的 Live Photo 照片与 MOV。请将从“照片”导出的未修改原片和视频放在同一文件夹。"
-        case .invalidVideo: return "动态照片的视频无法读取，或时长、尺寸无效。"
-        case .invalidEdit: return "Live Photo 只支持有效范围内的裁剪和封面选择。"
-        case .export(let detail): return "Live Photo 导出失败：" + detail
+        case .missingPair: return L10n.text("未找到标识匹配的 Live Photo 照片与 MOV。请将从“照片”导出的未修改原片和视频放在同一文件夹。")
+        case .invalidVideo: return L10n.text("动态照片的视频无法读取，或时长、尺寸无效。")
+        case .invalidEdit: return L10n.text("Live Photo 只支持有效范围内的裁剪和封面选择。")
+        case .export(let detail): return L10n.text("Live Photo 导出失败：") + detail
         }
     }
 }
@@ -228,7 +228,7 @@ public enum LivePhotoEngine {
     public static func export(_ live: LivePhotoAsset, original: CGImage, edits: LivePhotoEdits, to directory: URL) async throws {
         try validate(edits, live: live)
         let manager = FileManager.default
-        guard !manager.fileExists(atPath: directory.path) else { throw LivePhotoFailure.export("请选择一个不存在的新文件夹名称，以保留已有文件。") }
+        guard !manager.fileExists(atPath: directory.path) else { throw LivePhotoFailure.export(L10n.text("请选择一个不存在的新文件夹名称，以保留已有文件。")) }
         let staging = directory.deletingLastPathComponent().appendingPathComponent(".easypic-live-" + UUID().uuidString)
         try manager.createDirectory(at: staging, withIntermediateDirectories: false)
         defer { try? manager.removeItem(at: staging) }
@@ -244,7 +244,7 @@ public enum LivePhotoEngine {
         try await writeMovie(live, edits: edits, identifier: identifier, coverTime: cover, to: video)
         guard photoIdentifier(photo) == identifier, try await videoIdentifier(video) == identifier,
               let marker = try await coverTime(in: AVURLAsset(url: video)), abs(marker - cover) < 0.05 else {
-            throw LivePhotoFailure.export("配对标识或封面时间验证失败。")
+            throw LivePhotoFailure.export(L10n.text("配对标识或封面时间验证失败。"))
         }
         try Task.checkCancellation()
         try manager.moveItem(at: staging, to: directory)
@@ -274,7 +274,7 @@ public enum LivePhotoEngine {
             let output = AVAssetReaderTrackOutput(track: audio, outputSettings: nil)
             let formats = try await audio.load(.formatDescriptions)
             let input = AVAssetWriterInput(mediaType: .audio, outputSettings: nil, sourceFormatHint: formats.first)
-            guard reader.canAdd(output), writer.canAdd(input) else { throw LivePhotoFailure.export("无法保留此视频的声音。") }
+            guard reader.canAdd(output), writer.canAdd(input) else { throw LivePhotoFailure.export(L10n.text("无法保留此视频的声音。")) }
             reader.add(output); writer.add(input); audioPair = (output, input)
         }
         var description: CMFormatDescription?
@@ -282,7 +282,7 @@ public enum LivePhotoEngine {
                     kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType as String: kCMMetadataBaseDataType_SInt8 as String]
         let status = CMMetadataFormatDescriptionCreateWithMetadataSpecifications(allocator: kCFAllocatorDefault,
              metadataType: kCMMetadataFormatType_Boxed, metadataSpecifications: [spec] as CFArray, formatDescriptionOut: &description)
-        guard status == noErr, let description else { throw LivePhotoFailure.export("无法创建封面标记。") }
+        guard status == noErr, let description else { throw LivePhotoFailure.export(L10n.text("无法创建封面标记。")) }
         let metadataInput = AVAssetWriterInput(mediaType: .metadata, outputSettings: nil, sourceFormatHint: description)
         let adaptor = AVAssetWriterInputMetadataAdaptor(assetWriterInput: metadataInput)
         guard writer.canAdd(metadataInput) else { throw LivePhotoFailure.invalidVideo }
@@ -295,7 +295,7 @@ public enum LivePhotoEngine {
             marker.dataType = kCMMetadataBaseDataType_SInt8 as String
             let group = AVTimedMetadataGroup(items: [marker], timeRange: CMTimeRange(
                 start: CMTime(seconds: coverTime, preferredTimescale: 60000), duration: composition.frameDuration))
-            guard adaptor.append(group) else { throw writer.error ?? LivePhotoFailure.export("无法写入封面标记。") }
+            guard adaptor.append(group) else { throw writer.error ?? LivePhotoFailure.export(L10n.text("无法写入封面标记。")) }
             metadataInput.markAsFinished()
             let sound = audioPair
             async let video: Void = pump(videoOutput, into: videoInput, writer: writer)
@@ -303,7 +303,7 @@ public enum LivePhotoEngine {
             try await video; try await audio
             guard reader.status == .completed else { throw reader.error ?? LivePhotoFailure.invalidVideo }
             await writer.finishWriting()
-            guard writer.status == .completed else { throw writer.error ?? LivePhotoFailure.export("视频编码未完成。") }
+            guard writer.status == .completed else { throw writer.error ?? LivePhotoFailure.export(L10n.text("视频编码未完成。")) }
         } catch { reader.cancelReading(); writer.cancelWriting(); throw error }
     }
 
@@ -313,10 +313,10 @@ public enum LivePhotoEngine {
     private static func pump(_ output: AVAssetReaderOutput, into input: AVAssetWriterInput, writer: AVAssetWriter) async throws {
         while true {
             try Task.checkCancellation()
-            guard writer.status == .writing else { throw writer.error ?? LivePhotoFailure.export("视频写入中断。") }
+            guard writer.status == .writing else { throw writer.error ?? LivePhotoFailure.export(L10n.text("视频写入中断。")) }
             if !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(2)); continue }
             guard let sample = output.copyNextSampleBuffer() else { break }
-            guard input.append(sample) else { throw writer.error ?? LivePhotoFailure.export("无法写入视频或音频帧。") }
+            guard input.append(sample) else { throw writer.error ?? LivePhotoFailure.export(L10n.text("无法写入视频或音频帧。")) }
         }
         input.markAsFinished()
     }

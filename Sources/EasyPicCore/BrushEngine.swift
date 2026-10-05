@@ -5,7 +5,7 @@ import CoreImage
 public enum BrushTool: String, Codable, CaseIterable {
     case eraser, clone, repair, pixelate, blur, solid
     public var title: String {
-        switch self { case .eraser: return "擦除"; case .clone: return "取样克隆"; case .repair: return "消除"; case .pixelate: return "像素马赛克"; case .blur: return "模糊"; case .solid: return "纯色遮盖" }
+        switch self { case .eraser: return L10n.text("擦除"); case .clone: return L10n.text("取样克隆"); case .repair: return L10n.text("消除"); case .pixelate: return L10n.text("像素马赛克"); case .blur: return L10n.text("模糊"); case .solid: return L10n.text("纯色画笔") }
     }
 }
 public struct BrushStroke: Codable, Equatable {

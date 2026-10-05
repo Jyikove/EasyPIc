@@ -1,3 +1,4 @@
+import EasyPicCore
 import SwiftUI
 import AppKit
 
@@ -7,18 +8,18 @@ enum CropRatio: String, CaseIterable, Identifiable {
     var id: Self { self }
     var title: String {
         switch self {
-        case .free: return "自由比例"
-        case .original: return "原图比例"
-        case .square: return "1:1"
-        case .portrait3x4: return "3:4"
-        case .landscape4x3: return "4:3"
-        case .wide16x9: return "16:9"
-        case .tall9x16: return "9:16"
-        case .portrait2x3: return "2:3"
-        case .landscape3x2: return "3:2"
-        case .wide18x9: return "18:9"
-        case .tall9x18: return "9:18"
-        case .cinema: return "2.39:1"
+        case .free: return L10n.text("自由比例")
+        case .original: return L10n.text("原图比例")
+        case .square: return "1 : 1"
+        case .portrait3x4: return "3 : 4"
+        case .landscape4x3: return "4 : 3"
+        case .wide16x9: return "16 : 9"
+        case .tall9x16: return "9 : 16"
+        case .portrait2x3: return "2 : 3"
+        case .landscape3x2: return "3 : 2"
+        case .wide18x9: return "18 : 9"
+        case .tall9x18: return "9 : 18"
+        case .cinema: return "2.39 : 1"
         }
     }
     func value(in size: CGSize) -> CGFloat? {
@@ -145,12 +146,14 @@ extension EditorModel {
 }
 
 struct CropOverlay: View {
+    @EnvironmentObject private var languageSettings: AppLanguageSettings
     @ObservedObject var model: EditorModel
     let size: CGSize
     let scale: CGFloat
     @State private var dragRect: CGRect?
     @State private var dragHandle: CropHandle?
     var body: some View {
+        let _ = languageSettings.language
         Canvas { context, area in
             var mask = Path(CGRect(origin: .zero, size: area))
             if let rect = model.cropRect {
@@ -186,7 +189,7 @@ struct CropOverlay: View {
             } else { context.fill(mask, with: .color(.black.opacity(0.5))) }
         }
         .frame(width: size.width, height: size.height).contentShape(Rectangle())
-        .accessibilityLabel("裁剪九宫格选框")
+        .accessibilityLabel(L10n.text("裁剪九宫格选框"))
         .gesture(DragGesture(minimumDistance: 0).onChanged { value in
             guard model.cropping, !model.busy, let rect = model.cropRect else { return }
             if dragRect == nil {
@@ -199,6 +202,11 @@ struct CropOverlay: View {
                                  delta: CGSize(width: value.translation.width / scale, height: value.translation.height / scale))
             }
         }.onEnded { _ in dragRect = nil; dragHandle = nil })
+        .simultaneousGesture(SpatialTapGesture(count: 2).onEnded { value in
+            let point = CGPoint(x: value.location.x / scale, y: value.location.y / scale)
+            if model.cropRect?.contains(point) == true { model.commitCrop() }
+        })
+        .quickHelp(L10n.text("双击选区或按 Enter 应用裁剪；Esc 取消。"))
         .onChange(of: model.cropRatio) { _, _ in dragRect = nil; dragHandle = nil }
         .onContinuousHover { phase in
             switch phase {

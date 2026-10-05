@@ -1,3 +1,4 @@
+import EasyPicCore
 import AppKit
 import SwiftUI
 

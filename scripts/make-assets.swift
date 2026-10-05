@@ -22,9 +22,7 @@ for size in [16, 32, 128, 256, 512] {
         NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
         NSGraphicsContext.current?.imageInterpolation = .high
         let bounds = NSRect(x: 0, y: 0, width: pixels, height: pixels)
-        let silhouette = bounds.insetBy(dx: CGFloat(pixels) * 0.02, dy: CGFloat(pixels) * 0.02)
-        let radius = silhouette.width * 0.22
-        NSBezierPath(roundedRect: silhouette, xRadius: radius, yRadius: radius).addClip()
+        // The source PNG already supplies its rounded silhouette and transparent alpha.
         icon.draw(in: bounds)
         NSGraphicsContext.restoreGraphicsState()
         let name = "icon_\(size)x\(size)" + (factor == 2 ? "@2x" : "") + ".png"

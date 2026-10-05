@@ -5,10 +5,11 @@ import EasyPicCore
 enum ViewerPanel { case thumbnails, text, edit }
 
 extension EditorModel {
-    var canSwitchPanel: Bool { (canBrowse || (textEditing && canPerformEditorActions)) && !brushMode }
-    var canNavigatePrevious: Bool { canBrowse && (currentIndex ?? 0) > 0 }
+    var viewerControlsEnabled: Bool { sidePanel != .edit && canBrowse }
+    var canSwitchPanel: Bool { viewerControlsEnabled && !brushMode }
+    var canNavigatePrevious: Bool { viewerControlsEnabled && (currentIndex ?? 0) > 0 }
     var canNavigateNext: Bool {
-        canBrowse && currentIndex.map { $0 + 1 < browsingFiles.count } == true
+        viewerControlsEnabled && currentIndex.map { $0 + 1 < browsingFiles.count } == true
     }
 
     func togglePanel(_ panel: ViewerPanel) {
@@ -48,7 +49,7 @@ extension EditorModel {
                 recognizedText = text; recognizingText = false
             } catch {
                 guard !Task.isCancelled, recognitionID == id else { return }
-                recognitionError = "无法识别文字：" + error.localizedDescription
+                recognitionError = L10n.text("无法识别文字：") + error.localizedDescription
                 recognizingText = false
             }
         }
@@ -76,10 +77,12 @@ private final class ThumbnailBox {
 }
 
 struct FolderPreviewPanel: View {
+    @EnvironmentObject private var languageSettings: AppLanguageSettings
     @ObservedObject var model: EditorModel
     var body: some View {
+        let _ = languageSettings.language
         VStack(spacing: 12) {
-            HStack { Text("预览").font(.headline); Spacer() }
+            HStack { Text(L10n.text("预览")).font(.headline); Spacer() }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
@@ -87,8 +90,10 @@ struct FolderPreviewPanel: View {
                             Button { model.open(url) } label: {
                                 FolderThumbnail(url: url, selected: model.fileURL == url)
                             }
-                            .buttonStyle(.plain).disabled(!model.canBrowse)
-                            .help(url.lastPathComponent).accessibilityLabel("查看 " + url.lastPathComponent)
+                            .buttonStyle(GlassButtonStyle(selected: model.fileURL == url, radius: 10,
+                                                        horizontalPadding: 0, verticalPadding: 0))
+                            .accessibilityAddTraits(model.fileURL == url ? .isSelected : []).disabled(!model.canBrowse)
+                            .quickHelp(url.lastPathComponent).accessibilityLabel(L10n.text("查看 ") + url.lastPathComponent)
                             .id(url)
                         }
                     }
@@ -103,18 +108,20 @@ struct FolderPreviewPanel: View {
             }
         }
         .padding(16).frame(width: 264)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 20))
+        .glassSurface(.panel, radius: 20)
     }
 }
 
 private struct FolderThumbnail: View {
+    @EnvironmentObject private var languageSettings: AppLanguageSettings
     let url: URL
     let selected: Bool
     @State private var image: CGImage?
     @State private var failed = false
     var body: some View {
+        let _ = languageSettings.language
         ZStack {
-            RoundedRectangle(cornerRadius: 10).fill(.black.opacity(0.16))
+            Color.clear
             if let image {
                 Image(decorative: image, scale: 1).resizable().scaledToFit().padding(5)
             } else if failed {
@@ -123,7 +130,6 @@ private struct FolderThumbnail: View {
         }
         .frame(height: 110)
         .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 2))
         .task(id: url) {
             do {
                 let thumbnail = try await ThumbnailCache.shared.image(for: url)
@@ -135,26 +141,28 @@ private struct FolderThumbnail: View {
 }
 
 struct TextRecognitionPanel: View {
+    @EnvironmentObject private var languageSettings: AppLanguageSettings
     @ObservedObject var model: EditorModel
     var body: some View {
+        let _ = languageSettings.language
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text("提取文本").font(.headline)
+                Text(L10n.text("提取文本")).font(.headline)
                 Spacer()
                 Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(model.recognizedText, forType: .string)
                 } label: { Image(systemName: "doc.on.doc") }
-                .help("复制全部文本").accessibilityLabel("复制全部文本")
-                .buttonStyle(.glass).disabled(model.recognizedText.isEmpty || model.recognizingText || model.busy)
+                .quickHelp(L10n.text("复制全部文本")).accessibilityLabel(L10n.text("复制全部文本"))
+                .buttonStyle(GlassButtonStyle()).disabled(model.recognizedText.isEmpty || model.recognizingText || model.busy)
             }
             if model.recognizingText || model.busy {
-                HStack { ProgressView().controlSize(.small); Text("正在识别…").foregroundStyle(.secondary) }
+                HStack { ProgressView().controlSize(.small); Text(L10n.text("正在识别…")).foregroundStyle(.secondary) }
             } else if let error = model.recognitionError {
-                Text(error).font(.callout).foregroundStyle(.secondary)
-                Button("重试") { model.clearRecognition(); model.recognizeText() }.buttonStyle(.glass)
+                Text(L10n.display(error)).font(.callout).foregroundStyle(.secondary)
+                Button(L10n.text("重试")) { model.clearRecognition(); model.recognizeText() }.buttonStyle(GlassButtonStyle())
             } else if model.recognizedText.isEmpty {
-                Text("未识别到文字").foregroundStyle(.secondary)
+                Text(L10n.text("未识别到文字")).foregroundStyle(.secondary)
             } else {
                 ScrollView {
                     Text(model.recognizedText).font(.system(size: 14)).textSelection(.enabled)
@@ -163,6 +171,6 @@ struct TextRecognitionPanel: View {
             }
         }
         .padding(18).frame(width: 300).frame(maxHeight: .infinity, alignment: .topLeading)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 20))
+        .glassSurface(.panel, radius: 20)
     }
 }

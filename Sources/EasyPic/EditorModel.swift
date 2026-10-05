@@ -8,18 +8,6 @@ import AVFoundation
 final class EditorModel: ObservableObject {
     @Published var documentHistory: DocumentHistory?
     @Published var selectedLayerID: UUID?
-    @Published var aiSelecting = false
-    @Published var aiRunning = false
-    @Published var aiPrompt = ""
-    @Published var cliPath = UserDefaults.standard.string(forKey: "codexPath") ?? "/opt/homebrew/bin/codex" { didSet { UserDefaults.standard.set(cliPath, forKey: "codexPath") } }
-    @Published var aiMessage = "输入需要修改的内容。"
-    @Published var aiReference: CGImage?
-    @Published var aiInput: CGImage?
-    @Published var aiResult: CGImage?
-    @Published var aiSelection: CGRect?
-    var aiRunner: CLIProcess?
-    var aiTask: Task<Void, Never>?
-    var aiJobDirectory: URL?
     @Published var brushTarget = "base"
     @Published var sidePanel: ViewerPanel?
     @Published var activeEditorTool: EditorTool?
@@ -32,11 +20,14 @@ final class EditorModel: ObservableObject {
     var recognitionSource: CGImage?
     @Published var brushMode = false
     @Published var brushTool: BrushTool = .solid
+    static let brushSizeRange = 10.0...100.0
     @Published var brushSize = 40.0
+    @Published var brushCanvasScale = 1.0
+    var brushPreviewDiameter: Double { min(200, max(2, brushSize * brushCanvasScale)) }
     @Published var brushHardness = 1.0
     @Published var brushOpacity = 1.0
     @Published var brushStrength = 16.0
-    @Published var brushColor = TextColor(0,0,0)
+    @Published var brushColor = TextColor(1,0,0)
     @Published var brushRectangle = false
     @Published var brushPoints: [CGPoint] = []
     @Published var cloneSource: CGPoint?
@@ -61,7 +52,7 @@ final class EditorModel: ObservableObject {
         }
     }
     @Published var error: String?
-    @Published var status = "本地编辑 · 保留原图"
+    @Published var status = L10n.text("本地编辑 · 保留原图")
     @Published var zoom: Double = 1
     @Published var viewportReset = UUID()
     @Published var actualSize = false
@@ -71,6 +62,11 @@ final class EditorModel: ObservableObject {
     @Published var exportSheet = false
     @Published var choosingExportLocation = false
     @Published var choosingOpenLocation = false
+    @Published var pendingOriginalReplacement: URL?
+    @Published var confirmingEditorExit = false
+    var editorExitUsesReplacement = false
+    var editorSession: EditorSessionSnapshot?
+    var pendingEditorExitAction: (() -> Void)?
     @Published var exportFormat: ExportFormat = .png
     @Published var jpegQuality = 0.92
     @Published var browsingFiles: [URL] = []
@@ -90,17 +86,17 @@ final class EditorModel: ObservableObject {
     var canRedo: Bool { livePhoto != nil ? liveHistory.canRedo : documentHistory?.canRedo == true }
     var canTransform: Bool { canEdit && livePhoto == nil }
     var dimensions: String { image.map { "\($0.width) × \($0.height)" } ?? "" }
-    var canBrowse: Bool { !busy && !cropping && !exportSheet && !choosingExportLocation && !choosingOpenLocation && !textEditing && !aiSelecting && !aiRunning }
+    var canBrowse: Bool { !busy && !cropping && !exportSheet && !choosingExportLocation && !choosingOpenLocation && !textEditing && pendingOriginalReplacement == nil && !confirmingEditorExit && error == nil }
     var canEdit: Bool { image != nil && !isReadOnly && canBrowse }
     var currentIndex: Int? { fileURL.flatMap { browsingFiles.firstIndex(of: $0) } }
 
     func openPanel() {
         guard canBrowse else { return }
-        let panel = NSOpenPanel()
+        let panel = NSOpenPanel(); EasyPicGlass.prepareFilePanel(panel)
         panel.allowedContentTypes = [.image, .quickTimeMovie, UTType(importedAs: "local.jyikove.easypic.project")]
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.message = "选择图片、Live Photo 配套 MOV，或文件夹。Live Photo 原片和视频需在同一文件夹。"
+        panel.message = L10n.text("选择图片、Live Photo 配套 MOV，或文件夹。Live Photo 原片和视频需在同一文件夹。")
         choosingOpenLocation = true
         panel.begin { [weak self] response in
             guard let self else { return }
@@ -110,20 +106,20 @@ final class EditorModel: ObservableObject {
     }
 
     func open(_ url: URL, viewingOnly: Bool = false) {
-        guard !busy, !exportSheet, !choosingExportLocation, !choosingOpenLocation, !textEditing, !aiRunning, !aiSelecting else { return }
-        guard url.isFileURL else { error = "请打开本机图片文件。"; return }
-        guard !cropping else { error = "请先应用或取消当前裁剪。"; return }
+        guard !busy, !exportSheet, !choosingExportLocation, !choosingOpenLocation, !textEditing, pendingOriginalReplacement == nil, !confirmingEditorExit, error == nil else { return }
+        guard url.isFileURL else { error = L10n.text("请打开本机图片文件。"); return }
+        guard !cropping else { error = L10n.text("请先应用或取消当前裁剪。"); return }
         requestLeave { [weak self] in
             guard let self else { return }
             if viewingOnly { self.sidePanel = nil }
             self.activeEditorTool = nil
-            self.aiResult = nil; self.aiInput = nil; self.aiSelection = nil
             self.clearRecognition()
             self.load(url)
         }
     }
 
     private func load(_ input: URL) {
+        editorSession = nil
         if input.pathExtension.lowercased() == "easypic" { loadProject(input); return }
         busy = true
         Task {
@@ -166,11 +162,11 @@ final class EditorModel: ObservableObject {
                     let composition = try await LivePhotoEngine.composition(for: live, edits: LivePhotoEdits())
                     livePlayback.configure(live, composition: composition)
                     livePlayback.restart()
-                    status = live.kind + " · 裁剪与封面 · 原件保留"
-                } else if missing { status = "Live Photo 原片 · 缺少配套 MOV，仅可查看" }
-                else if loaded.mediaInfo.animation != nil { status = "动图 · 只读播放" }
-                else if loaded.mediaInfo.isGIF { status = "GIF · 只读查看" }
-                else { status = loaded.frameCount > 1 ? "多页图片 · 当前查看和编辑首页" : "本地编辑 · 保留原图" }
+                    status = live.kind + L10n.text(" · 裁剪与封面 · 原件保留")
+                } else if missing { status = L10n.text("Live Photo 原片 · 缺少配套 MOV，仅可查看") }
+                else if loaded.mediaInfo.animation != nil { status = L10n.text("动图 · 只读播放") }
+                else if loaded.mediaInfo.isGIF { status = L10n.text("GIF · 只读查看") }
+                else { status = loaded.frameCount > 1 ? L10n.text("多页图片 · 当前查看和编辑首页") : L10n.text("本地编辑 · 保留原图") }
                 playback.configure(url: target, poster: loaded.image, animation: loaded.mediaInfo.animation)
                 // Opening one file must not wait for macOS permission to enumerate its parent.
                 Task {
@@ -194,7 +190,7 @@ final class EditorModel: ObservableObject {
     }
 
     func navigate(_ direction: Int) {
-        guard canBrowse, let index = currentIndex else { return }
+        guard viewerControlsEnabled, let index = currentIndex else { return }
         let next = index + direction
         if browsingFiles.indices.contains(next) { open(browsingFiles[next]) }
     }
@@ -219,6 +215,7 @@ final class EditorModel: ObservableObject {
 
     func beginCrop() {
         guard canEdit else { return }
+        startEditorSessionIfNeeded()
         sidePanel = .edit; activeEditorTool = .crop; cancelBrush(); livePlayback.showCover()
         cropping = true; cropRatio = .free; cropRect = CGRect(origin: .zero, size: cropImageSize)
         resetZoom()
@@ -242,6 +239,7 @@ final class EditorModel: ObservableObject {
         busy = true
         let edits = next.edits
         Task {
+            var succeeded = false
             do {
                 let (preview, composition) = try await Task.detached(priority: .userInitiated) {
                     (try await LivePhotoEngine.preview(livePhoto, original: original, edits: edits),
@@ -249,9 +247,12 @@ final class EditorModel: ObservableObject {
                 }.value
                 image = preview; liveHistory = next; cropRect = nil
                 livePlayback.configure(livePhoto, composition: composition, coverTime: edits.coverTime)
-                status = livePhoto.kind + " · 裁剪与封面 · 原件保留"
+                status = livePhoto.kind + L10n.text(" · 裁剪与封面 · 原件保留")
+                succeeded = true
             } catch { self.error = error.localizedDescription }
             busy = false
+            let continuation = pendingEditorAction; pendingEditorAction = nil
+            if succeeded { continuation?() }
         }
     }
 
@@ -274,7 +275,7 @@ final class EditorModel: ObservableObject {
     func export() {
         if livePhoto != nil { exportLive(); return }
         guard let image, let fileURL, !isReadOnly, !busy, !choosingExportLocation else { return }
-        let panel = NSSavePanel()
+        let panel = NSSavePanel(); EasyPicGlass.prepareFilePanel(panel)
         panel.directoryURL = fileURL.deletingLastPathComponent()
         panel.allowedContentTypes = [exportFormat.type]
         panel.nameFieldStringValue = fileURL.deletingPathExtension().lastPathComponent + "-edited." + exportFormat.rawValue
@@ -289,23 +290,24 @@ final class EditorModel: ObservableObject {
         }
     }
 
-    private func writeExport(_ image: CGImage, source fileURL: URL, destination url: URL) {
+    func writeExport(_ image: CGImage, source fileURL: URL, destination url: URL) {
         guard !isReadOnly else { return }
         // Even a user-selected export path must never silently replace the source.
         guard url.resolvingSymlinksInPath().standardizedFileURL != fileURL.resolvingSymlinksInPath().standardizedFileURL else {
-            error = "请使用新的文件名导出，以保留原图。"; return
+            error = L10n.text("请使用新的文件名导出，以保留原图。"); return
         }
         let format = exportFormat, quality = jpegQuality, snapshot = document, assets = resources
         busy = true
         Task {
             do {
-                try await Task.detached(priority: .userInitiated) {
+                let result = try await Task.detached(priority: .userInitiated) {
                     let result = try snapshot.map { try DocumentEngine.render($0, resources: assets) } ?? image
                     let data = try ImageEngine.encode(result, format: format, quality: quality)
                     try data.write(to: url, options: .atomic)
+                    return result
                 }.value
-                savedDocument = snapshot
-                status = "已导出 · " + url.lastPathComponent
+                if let snapshot { finishSavingImage(snapshot, rendered: result) }
+                status = L10n.text("已导出 · ") + url.lastPathComponent
                 exportSheet = false
                 busy = false
                 let continuation = pendingAfterExport
@@ -314,17 +316,18 @@ final class EditorModel: ObservableObject {
             } catch {
                 self.error = error.localizedDescription
                 busy = false
+                pendingAfterExport = nil
             }
         }
     }
 
     private func exportLive() {
         guard let livePhoto, let original, !busy, !choosingExportLocation else { return }
-        let panel = NSSavePanel()
+        let panel = NSSavePanel(); EasyPicGlass.prepareFilePanel(panel)
         panel.directoryURL = livePhoto.photoURL.deletingLastPathComponent()
         panel.nameFieldStringValue = livePhoto.photoURL.deletingPathExtension().lastPathComponent + "-edited-live"
-        panel.title = "保存 Live Photo 配对文件夹"
-        panel.message = "会创建新的文件夹，内含配对 JPG 与 MOV，保留动态内容和声音。"
+        panel.title = L10n.text("保存 Live Photo 配对文件夹")
+        panel.message = L10n.text("会创建新的文件夹，内含配对 JPG 与 MOV，保留动态内容和声音。")
         panel.canCreateDirectories = true
         choosingExportLocation = true
         panel.begin { [weak self] response in
@@ -339,10 +342,11 @@ final class EditorModel: ObservableObject {
                         try await LivePhotoEngine.export(livePhoto, original: original, edits: snapshot, to: url)
                     }.value
                     self.exportedLiveEdits = snapshot
-                    self.status = "Live Photo 已导出 · " + url.lastPathComponent
+                    self.checkpointEditorSession()
+                    self.status = L10n.text("Live Photo 已导出 · ") + url.lastPathComponent
                     self.exportSheet = false; self.busy = false
                     let continuation = self.pendingAfterExport; self.pendingAfterExport = nil; continuation?()
-                } catch { self.error = error.localizedDescription; self.busy = false }
+                } catch { self.error = error.localizedDescription; self.busy = false; self.pendingAfterExport = nil }
             }
         }
     }
@@ -352,13 +356,11 @@ final class EditorModel: ObservableObject {
     func requestLeave(_ continuation: @escaping () -> Void) {
         guard !busy else { return }
         guard dirty else { continuation(); return }
-        let alert = NSAlert()
-        alert.messageText = "当前图片还有未保存的修改"
-        alert.informativeText = "保存项目后可继续编辑；也可以导出图片或放弃修改。"
-        alert.addButton(withTitle: canUseLayers ? "保存项目后继续" : "导出后继续")
-        alert.addButton(withTitle: "放弃修改")
-        alert.addButton(withTitle: "取消")
-        switch alert.runModal() {
+        let response = GlassUtilityPresenter.askToLeave(
+            title: L10n.text("当前图片还有未保存的修改"),
+            message: L10n.text("保存项目后可继续编辑；也可以导出图片或放弃修改。"),
+            saveTitle: canUseLayers ? L10n.text("保存项目后继续") : L10n.text("导出后继续"))
+        switch response {
         case .alertFirstButtonReturn: pendingAfterExport = continuation; if canUseLayers { saveProject() } else { exportSheet = true }
         case .alertSecondButtonReturn: continuation()
         default: break

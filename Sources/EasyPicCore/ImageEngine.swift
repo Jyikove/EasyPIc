@@ -7,11 +7,11 @@ public enum ImageFailure: LocalizedError {
     case unreadable, renderFailed, invalidCrop, writeFailed, cannotReplace
     public var errorDescription: String? {
         switch self {
-        case .unreadable: return "无法读取这张图片。文件可能损坏，或系统不支持此格式。"
-        case .renderFailed: return "图片处理失败。请尝试较小的图片。"
-        case .invalidCrop: return "裁剪范围过小或超出了图片边界。"
-        case .writeFailed: return "无法写入导出文件。请检查空间和文件夹权限。"
-        case .cannotReplace: return "此原图暂不支持直接替换，请另存为 JPG 或 PNG。"
+        case .unreadable: return L10n.text("无法读取这张图片。文件可能损坏，或系统不支持此格式。")
+        case .renderFailed: return L10n.text("图片处理失败。请尝试较小的图片。")
+        case .invalidCrop: return L10n.text("裁剪范围过小或超出了图片边界。")
+        case .writeFailed: return L10n.text("无法写入导出文件。请检查空间和文件夹权限。")
+        case .cannotReplace: return L10n.text("此原图暂不支持直接替换，请另存为 JPG 或 PNG。")
         }
     }
 }
