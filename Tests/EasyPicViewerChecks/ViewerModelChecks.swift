@@ -23,6 +23,8 @@ struct ViewerModelChecks {
     @MainActor static func main() async throws {
         let folder = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("build/ViewerFixtures")
         let photo = folder.appendingPathComponent("TextSample.png")
+        try await MultiWindowChecks.run(photo: photo)
+        if CommandLine.arguments.contains("--window-routing-only") { return }
         let model = EditorModel()
         model.sidePanel = .edit
         model.open(photo, viewingOnly: true)

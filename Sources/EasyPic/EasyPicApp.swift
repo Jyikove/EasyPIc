@@ -5,23 +5,18 @@ import AppKit
 @main
 struct EasyPicApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-    @StateObject private var model = EditorModel()
+    @FocusedValue(\.editorModel) private var focusedModel
+    @StateObject private var emptyModel = EditorModel()
+    private var model: EditorModel { focusedModel ?? emptyModel }
     @StateObject private var languageSettings = AppLanguageSettings.shared
 
     init() { AppLanguageSettings.shared.prepareSystemLanguage() }
 
     var body: some Scene {
-        Window("EasyPic", id: "editor") {
-            EditorView(model: model, delegate: delegate)
+        WindowGroup("EasyPic", id: "editor", for: URL.self) { $url in
+            EditorWindowRoot(delegate: delegate, initialURL: url)
                 .environmentObject(languageSettings)
                 .environment(\.locale, languageSettings.language.locale)
-                .onAppear {
-                    delegate.model = model
-                    if let url = delegate.pendingURL { delegate.pendingURL = nil; model.open(url, viewingOnly: true) }
-                    else if model.mediaInfo?.animation != nil { model.playback.play() }
-                }
-                .onDisappear { model.playback.pause(); model.livePlayback.pause() }
-                .onOpenURL { model.open($0, viewingOnly: true) }
         }
         .defaultSize(width: 1180, height: 800)
         .windowStyle(.hiddenTitleBar)
@@ -89,14 +84,74 @@ struct EasyPicApp: App {
     }
 }
 
+private struct EditorModelFocusKey: FocusedValueKey {
+    typealias Value = EditorModel
+}
+extension FocusedValues {
+    var editorModel: EditorModel? {
+        get { self[EditorModelFocusKey.self] }
+        set { self[EditorModelFocusKey.self] = newValue }
+    }
+}
+
+private struct EditorWindowRoot: View {
+    let delegate: AppDelegate
+    let initialURL: URL?
+    @StateObject private var model = EditorModel()
+    @State private var opened = false
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        EditorView(model: model, delegate: delegate)
+            .focusedSceneValue(\.editorModel, model)
+            .onAppear {
+                delegate.showEditor = { openWindow(id: "editor") }
+                delegate.openEditor = { openWindow(id: "editor", value: $0) }
+                guard !opened else { return }
+                opened = true
+                if let initialURL { model.open(initialURL, viewingOnly: true) }
+                delegate.ready(model)
+            }
+            .onDisappear { model.playback.pause(); model.livePlayback.pause() }
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     weak var model: EditorModel?
     weak var editorWindow: NSWindow?
-    var pendingURL: URL?
     var showEditor: (() -> Void)?
+    var openEditor: ((URL) -> Void)?
+    private var pendingURLs: [URL] = []
+    private var editors: [ObjectIdentifier: Entry] = [:]
     private var allowTermination = false
-
+    private final class Entry {
+        weak var window: NSWindow?
+        weak var model: EditorModel?
+        init(_ window: NSWindow, _ model: EditorModel) { self.window = window; self.model = model }
+    }
+    func register(_ window: NSWindow, model: EditorModel) {
+        editors[ObjectIdentifier(window)] = Entry(window, model)
+        self.model = model; editorWindow = window
+    }
+    func ready(_ model: EditorModel) {
+        if self.model == nil { self.model = model }
+        let urls = pendingURLs; pendingURLs.removeAll()
+        if model.image == nil && !model.busy, let first = urls.first {
+            model.open(first, viewingOnly: true)
+            openURLs(Array(urls.dropFirst()))
+        } else { openURLs(urls) }
+    }
+    func openURLs(_ urls: [URL]) {
+        guard let openEditor else { pendingURLs.append(contentsOf: urls); return }
+        for url in urls {
+            // Reuse only an unused launch window. An existing document is never
+            // replaced by a Finder request, even while it is still loading.
+            if let model, model.image == nil, !model.busy, model.error == nil {
+                model.open(url, viewingOnly: true)
+                editorWindow?.makeKeyAndOrderFront(nil)
+            } else { openEditor(url) }
+        }
+    }
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let iconURL = Bundle.main.url(forResource: "EasyPicIcon", withExtension: "icns"), let icon = NSImage(contentsOf: iconURL) {
             NSApp.applicationIconImage = icon
@@ -105,11 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
     func application(_ sender: NSApplication, openFiles filenames: [String]) {
-        if let path = filenames.first {
-            showEditor?()
-            let url = URL(fileURLWithPath: path)
-            if let model { model.open(url, viewingOnly: true) } else { pendingURL = url }
-        }
+        openURLs(filenames.map { URL(fileURLWithPath: $0) })
         sender.reply(toOpenOrPrint: .success)
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -118,30 +169,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if allowTermination { return .terminateNow }
-        guard let model, model.image != nil else { return .terminateNow }
-        guard model.canRequestApplicationExit else { NSSound.beep(); return .terminateCancel }
-        guard model.dirty || model.editorSessionHasChanges else { return .terminateNow }
-        model.requestApplicationExit { [weak self] in
-            self?.allowTermination = true
-            sender.terminate(nil)
+        let active = editors.values.compactMap { $0.window == nil ? nil : $0.model }
+        let models = active.isEmpty ? [model].compactMap { $0 } : active
+        guard models.allSatisfy({ $0.image == nil || $0.canRequestApplicationExit }) else {
+            NSSound.beep(); return .terminateCancel
         }
+        guard let pending = models.first(where: { $0.dirty || $0.editorSessionHasChanges }) else { return .terminateNow }
+        editors.values.first(where: { $0.model === pending })?.window?.makeKeyAndOrderFront(nil)
+        confirmTermination(models.filter { $0.dirty || $0.editorSessionHasChanges }, sender: sender)
         return .terminateCancel
     }
+    private func confirmTermination(_ remaining: [EditorModel], sender: NSApplication) {
+        guard let current = remaining.first else {
+            allowTermination = true
+            sender.terminate(nil)
+            return
+        }
+        editors.values.first(where: { $0.model === current })?.window?.makeKeyAndOrderFront(nil)
+        current.requestApplicationExit { [weak self] in
+            self?.confirmTermination(Array(remaining.dropFirst()), sender: sender)
+        }
+    }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if allowTermination { return true }
-        guard let model, model.image != nil else { return true }
+        guard let model = editors[ObjectIdentifier(sender)]?.model, model.image != nil else { return true }
         guard model.canRequestApplicationExit else { NSSound.beep(); return false }
         guard model.dirty || model.editorSessionHasChanges else { return true }
-        model.requestApplicationExit { [weak self] in
-            self?.allowTermination = true
-            NSApp.terminate(nil)
-        }
+        model.requestApplicationExit { [weak sender] in sender?.close() }
         return false
+    }
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        editorWindow = window; model = editors[ObjectIdentifier(window)]?.model
+    }
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        let entry = editors.removeValue(forKey: ObjectIdentifier(window))
+        entry?.model?.playback.pause(); entry?.model?.livePlayback.pause()
+        if editorWindow === window { editorWindow = nil; model = nil }
     }
 }
 
 struct WindowBridge: NSViewRepresentable {
     let delegate: AppDelegate
+    let model: EditorModel
     func makeCoordinator() -> WindowDelegateProxy { WindowDelegateProxy(owner: delegate) }
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
@@ -153,7 +223,7 @@ struct WindowBridge: NSViewRepresentable {
             window.isMovableByWindowBackground = false
             window.animationBehavior = .documentWindow
             window.collectionBehavior.insert(.fullScreenPrimary)
-            delegate.editorWindow = window
+            delegate.register(window, model: model)
             // Preserve SwiftUI's delegate: it owns the scene/window lifecycle.
             context.coordinator.original = window.delegate
             window.delegate = context.coordinator
@@ -178,6 +248,14 @@ final class WindowDelegateProxy: NSObject, NSWindowDelegate {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard owner.windowShouldClose(sender) else { return false }
         return original?.windowShouldClose?(sender) ?? true
+    }
+    func windowDidBecomeKey(_ notification: Notification) {
+        owner.windowDidBecomeKey(notification)
+        original?.windowDidBecomeKey?(notification)
+    }
+    func windowWillClose(_ notification: Notification) {
+        owner.windowWillClose(notification)
+        original?.windowWillClose?(notification)
     }
     func windowDidFailToEnterFullScreen(_ window: NSWindow) {
         NotificationCenter.default.post(name: .easyPicFullScreenTransitionFailed, object: window)

@@ -85,7 +85,7 @@ struct EditorView: View {
         .onChange(of: model.cropping) { _, cropping in if cropping { model.sidePanel = .edit } }
         .onChange(of: model.brushMode) { _, painting in if painting { model.sidePanel = .edit } }
         .glassWindowBackground()
-        .background(WindowBridge(delegate: delegate))
+        .background(WindowBridge(delegate: delegate, model: model))
         .background(SidebarWindowBridge(sizer: sidebarLayout, sidebarWidth: sidebarWidth))
         .preferredColorScheme(.dark)
         .tint(accent)
