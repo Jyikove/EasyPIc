@@ -90,6 +90,40 @@ final class EditorModel: ObservableObject {
     var canEdit: Bool { image != nil && !isReadOnly && canBrowse }
     var currentIndex: Int? { fileURL.flatMap { browsingFiles.firstIndex(of: $0) } }
 
+    private var playbackObservers: [NSObjectProtocol] = []
+    private var resumeImagePlayback = false
+    private var resumeLivePlayback = false
+
+    init() {
+        let center = NotificationCenter.default
+        playbackObservers.append(center.addObserver(forName: NSApplication.didResignActiveNotification,
+                                                     object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pausePlaybackForInactiveApp() }
+        })
+        playbackObservers.append(center.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                                     object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.resumePlaybackAfterActiveApp() }
+        })
+    }
+
+    deinit {
+        playbackObservers.forEach(NotificationCenter.default.removeObserver)
+    }
+
+    private func pausePlaybackForInactiveApp() {
+        resumeImagePlayback = playback.isPlaying
+        resumeLivePlayback = livePlayback.isPlaying
+        playback.pause()
+        livePlayback.pause()
+    }
+
+    private func resumePlaybackAfterActiveApp() {
+        if resumeImagePlayback { playback.play() }
+        if resumeLivePlayback { livePlayback.play() }
+        resumeImagePlayback = false
+        resumeLivePlayback = false
+    }
+
     func openPanel() {
         guard canBrowse else { return }
         let panel = NSOpenPanel(); EasyPicGlass.prepareFilePanel(panel)

@@ -122,7 +122,7 @@ struct InlineTextEditor: View {
             if let draft, draft.id == layer.id { layer = draft }
         }
     }
-    private func number(_ title: String, _ key: WritableKeyPath<TextLayer, Double>, _ range: ClosedRange<Double>, step: Double = 1) -> some View {
+    private func number(_ title: String, _ key: WritableKeyPath<TextLayer, Double>, _ range: ClosedRange<Double>, step: Double = 2) -> some View {
         NumericValueControl(title: title, value: binding(key), range: range, step: step)
     }
     private func color(_ title: String, _ key: WritableKeyPath<TextLayer, TextColor>) -> some View {

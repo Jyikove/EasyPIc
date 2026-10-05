@@ -149,8 +149,15 @@ extension EditorModel {
         let assets = resources, base = baseImage
         previewTask = Task {
             do {
+                // Text controls publish on every keystroke/step. Give the editor a
+                // short quiet window before starting a full document composite;
+                // cancellation cannot stop synchronous Core Graphics work that has
+                // already entered the detached task.
+                try await Task.sleep(for: .milliseconds(55))
+                guard !Task.isCancelled else { return }
                 let preview = try await Task.detached(priority: .userInitiated) {
-                    try DocumentEngine.render(doc, resources: assets, base: base, maxDimension: 1600)
+                    try DocumentEngine.render(doc, resources: assets, base: base,
+                                              maxDimension: 1200)
                 }.value
                 guard !Task.isCancelled else { return }; documentPreview = preview
             } catch { if !Task.isCancelled { self.error = error.localizedDescription } }

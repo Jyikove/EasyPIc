@@ -50,9 +50,11 @@ public struct TextLayer: Codable, Equatable {
             let inset = padding * 2 + strokeWidth * 2
             return CGSize(width: max(1, ceil(measured.width + inset)), height: max(1, ceil(measured.height + inset)))
         }
-        let attributed = attributedContent(content.isEmpty ? " " : content)
+        let normalized = content.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let attributed = attributedContent(normalized.isEmpty ? " " : normalized)
         let setter = CTFramesetterCreateWithAttributedString(attributed)
-        let proposed = CTFramesetterSuggestFrameSizeWithConstraints(setter, CFRange(location: 0, length: 0), nil, CGSize(width: 100000, height: 100000), nil)
+        let proposed = CTFramesetterSuggestFrameSizeWithConstraints(setter, CFRange(location: 0, length: attributed.length), nil, CGSize(width: 100000, height: 100000), nil)
         let width = max(1, ceil(proposed.width + padding * 2 + strokeWidth * 2))
         let height = max(1, ceil(proposed.height + padding * 2 + strokeWidth * 2))
         return CGSize(width: width, height: height)
@@ -132,10 +134,12 @@ public enum TextRenderer {
                 return CTParagraphStyleCreate(settings, settings.count)
             }
         }
-        let attributed = text.attributedContent(text.content, paragraph: paragraph)
+        let normalized = text.content.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let attributed = text.attributedContent(normalized.isEmpty ? " " : normalized, paragraph: paragraph)
         let setter = CTFramesetterCreateWithAttributedString(attributed)
         let path = CGPath(rect: CGRect(origin: .zero, size: box.size), transform: nil)
-        let frame = CTFramesetterCreateFrame(setter, CFRange(location: 0, length: 0), path, nil)
+        let frame = CTFramesetterCreateFrame(setter, CFRange(location: 0, length: attributed.length), path, nil)
         let lines = CTFrameGetLines(frame) as! [CTLine]
         if !lines.isEmpty {
             var origins = [CGPoint](repeating: .zero, count: lines.count)

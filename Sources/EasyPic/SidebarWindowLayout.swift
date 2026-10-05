@@ -55,6 +55,7 @@ final class SidebarAttachmentView: NSView {
     private var fullScreenTransition = false
     private var reconcileFullScreen = false
     private var pendingResize = false
+    private var appActive = true
     private var observers: [NSObjectProtocol] = []
 
     init(minimumWidth: CGFloat, horizontalInset: CGFloat = 24) {
@@ -79,6 +80,19 @@ final class SidebarAttachmentView: NSView {
             observe(name) { sizer in sizer.fullScreenTransition = false; sizer.scheduleResize() }
         }
         observe(NSWindow.didResizeNotification) { $0.windowDidResize() }
+        observeGlobal(NSApplication.didResignActiveNotification) { sizer in
+            sizer.appActive = false
+            sizer.resizeDisplayLink?.invalidate(); sizer.resizeDisplayLink = nil
+            if sizer.resizeGeneration != nil, let window = sizer.window {
+                window.setFrame(sizer.animationTarget, display: false, animate: false)
+                window.contentMinSize.width = sizer.minimumWidth + sizer.appliedWidth
+                sizer.resizeGeneration = nil
+            }
+        }
+        observeGlobal(NSApplication.didBecomeActiveNotification) { sizer in
+            sizer.appActive = true
+            sizer.scheduleResize()
+        }
         observe(NSWindow.willStartLiveResizeNotification) { sizer in
             // Give a manual resize control immediately, even if a panel was just opened.
             sizer.resizeDisplayLink?.invalidate(); sizer.resizeDisplayLink = nil
@@ -96,6 +110,11 @@ final class SidebarAttachmentView: NSView {
     }
     private func observe(_ name: Notification.Name, action: @escaping (SidebarWindowSizer) -> Void) {
         observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { if let self { action(self) } }
+        })
+    }
+    private func observeGlobal(_ name: Notification.Name, action: @escaping (SidebarWindowSizer) -> Void) {
+        observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { if let self { action(self) } }
         })
     }
@@ -155,7 +174,7 @@ final class SidebarAttachmentView: NSView {
         // Do not let a new minimum force an early frame jump before the transition.
         window.contentMinSize.width = minimumWidth
         // Retarget from the viewport baseline, never from an intermediate animated frame.
-        if !window.isVisible || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        if !window.isVisible || !appActive || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             window.setFrame(frame, display: true)
             window.contentMinSize.width = minimumWidth + appliedWidth
             resizeGeneration = nil

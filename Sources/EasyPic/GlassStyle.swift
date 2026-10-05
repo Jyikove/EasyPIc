@@ -54,23 +54,29 @@ private struct GlassSurfaceModifier: ViewModifier {
         return interactive ? base.interactive() : base
     }
     func body(content: Content) -> some View {
-        content
-            .background {
-                if reduceTransparency {
-                    RoundedRectangle(cornerRadius: radius, style: .continuous)
-                        .fill(surface == .canvas || surface == .panel ?
-                              Color(red: 0.14, green: 0.21, blue: 0.30) : Color(red: 0.08, green: 0.10, blue: 0.14))
-                }
-            }
-            .glassEffect(material, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+        surfaceContent(content)
             .overlay {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
                     .strokeBorder(EasyPicGlass.edge(surface, highlighted: selected), lineWidth: 0.8)
                     .allowsHitTesting(false).accessibilityHidden(true)
             }
-            .shadow(color: .black.opacity(surface == .floating ? 0.22 : 0.07),
-                    radius: surface == .floating ? 16 : 5, y: surface == .floating ? 8 : 2)
+            .shadow(color: .black.opacity(surface == .floating ? 0.22 : 0),
+                    radius: surface == .floating ? 16 : 0, y: surface == .floating ? 8 : 0)
     }
+    @ViewBuilder private func surfaceContent(_ content: Content) -> some View {
+        // Dense controls share the surrounding panel's glass. Independent live
+        // refraction and shadows on every text field multiply compositor work.
+        if reduceTransparency || surface == .input || surface == .control {
+            content.background {
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(reduceTransparency ? Color(red: 0.14, green: 0.21, blue: 0.30) :
+                            EasyPicGlass.blue.opacity(selected ? 0.30 : 0.13))
+            }
+        } else {
+            content.glassEffect(material, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+        }
+    }
+
 }
 
 struct GlassButtonStyle: ButtonStyle {
