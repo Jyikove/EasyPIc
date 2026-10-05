@@ -84,7 +84,7 @@ struct FolderPreviewPanel: View {
         VStack(spacing: 12) {
             HStack { Text(L10n.text("预览")).font(.headline); Spacer() }
             ScrollViewReader { proxy in
-                ScrollView {
+                ScrollView(showsIndicators: false) {
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                         ForEach(model.browsingFiles, id: \.self) { url in
                             Button { model.open(url) } label: {
@@ -164,13 +164,48 @@ struct TextRecognitionPanel: View {
             } else if model.recognizedText.isEmpty {
                 Text(L10n.text("未识别到文字")).foregroundStyle(.secondary)
             } else {
-                ScrollView {
-                    Text(model.recognizedText).font(.system(size: 14)).textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                RecognizedTextView(text: model.recognizedText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .padding(18).frame(width: 300).frame(maxHeight: .infinity, alignment: .topLeading)
         .glassSurface(.panel, radius: 20)
+    }
+}
+
+private struct RecognizedTextView: NSViewRepresentable {
+    let text: String
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = false
+        scroll.hasHorizontalScroller = false
+        let view = NSTextView(frame: scroll.contentView.bounds)
+        view.isEditable = false
+        view.isSelectable = true
+        view.isRichText = false
+        view.drawsBackground = false
+        view.textContainerInset = NSSize(width: 4, height: 4)
+        view.font = .systemFont(ofSize: 14)
+        view.textColor = .labelColor
+        view.allowsUndo = false
+        view.isVerticallyResizable = true
+        view.isHorizontallyResizable = false
+        view.minSize = .zero
+        view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        view.autoresizingMask = [.width]
+        view.textContainer?.widthTracksTextView = true
+        view.textContainer?.containerSize = NSSize(width: scroll.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
+        scroll.documentView = view
+        return scroll
+    }
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let view = scroll.documentView as? NSTextView else { return }
+        if view.string != text {
+            view.string = text
+            view.setSelectedRange(NSRange(location: 0, length: 0))
+            view.scrollRangeToVisible(NSRange(location: 0, length: 0))
+        }
+        view.setAccessibilityLabel(L10n.text("提取文本"))
     }
 }

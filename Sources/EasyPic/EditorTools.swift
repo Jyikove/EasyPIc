@@ -48,7 +48,7 @@ enum EditorTool: String, CaseIterable, Identifiable {
 }
 
 extension EditorModel {
-    /// The rail can finish an inline text draft or cancel a crop before switching tools.
+    /// Finish pending edits before switching tools.
     var canPerformEditorActions: Bool {
         image != nil && !isReadOnly && canRequestApplicationExit
     }
@@ -67,12 +67,16 @@ extension EditorModel {
         guard canPerformEditorActions else { return false }
         if livePhoto != nil && tool != .undo && tool != .redo && tool != .crop && tool != .saveAs { return false }
         if tool == .replaceOriginal { return canReplaceOriginal }
-        if tool == .saveAs { return !cropping }
+        if tool == .saveAs { return true }
         if tool == .undo { return canUndo || hasTextDraftChanges }
         if tool == .redo { return canRedo && !hasTextDraftChanges }
         return true
     }
     func finishInlineText(then action: @escaping () -> Void) {
+        if cropping {
+            finishCrop { [weak self] in self?.finishInlineText(then: action) }
+            return
+        }
         guard textEditing else { action(); return }
         guard var draft = draftLayer, draft.text?.isValid == true else {
             error = L10n.text("请先输入有效的文字设置。"); return
@@ -89,6 +93,18 @@ extension EditorModel {
         if var doc = document, !doc.layers.contains(where: { $0.id == draft.id }) {
             doc.layers.append(draft); commitDocument(doc)
         } else { updateLayer(draft, commit: true) }
+    }
+    func finishCrop(then action: @escaping () -> Void) {
+        guard cropping else { action(); return }
+        guard canApplyCrop, let rect = cropPixelRect else { return }
+        // Leaving an unchanged full-image selection should not create history.
+        if rect == CGRect(origin: .zero, size: cropImageSize) {
+            cancelCrop(); action(); return
+        }
+        pendingEditorAction = action
+        commitCrop()
+        // Synchronous validation failures must not leave a stale continuation.
+        if !busy { pendingEditorAction = nil }
     }
     func chooseEditorTool(_ tool: EditorTool) {
         guard toolEnabled(tool) else { return }
@@ -287,7 +303,16 @@ private struct EditorToolDetails: View {
     private var panel: some View {
         VStack(alignment: tool == .crop ? .center : .leading, spacing: tool == .crop ? 10 : 16) {
             if tool == .crop {
-                closeButton
+                HStack(spacing: 10) {
+                    closeButton
+                    Button(action: model.closeToolDetails) {
+                        Image(systemName: "checkmark").frame(width: 22, height: 22)
+                    }
+                    .buttonStyle(GlassButtonStyle(radius: 7, horizontalPadding: 0, verticalPadding: 0))
+                    .accessibilityLabel(L10n.text("完成裁剪"))
+                    .disabled(!model.canPerformEditorActions || !model.canApplyCrop)
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
             } else {
                 HStack {
                     Spacer()

@@ -202,11 +202,6 @@ struct CropOverlay: View {
                                  delta: CGSize(width: value.translation.width / scale, height: value.translation.height / scale))
             }
         }.onEnded { _ in dragRect = nil; dragHandle = nil })
-        .simultaneousGesture(SpatialTapGesture(count: 2).onEnded { value in
-            let point = CGPoint(x: value.location.x / scale, y: value.location.y / scale)
-            if model.cropRect?.contains(point) == true { model.commitCrop() }
-        })
-        .quickHelp(L10n.text("双击选区或按 Enter 应用裁剪；Esc 取消。"))
         .onChange(of: model.cropRatio) { _, _ in dragRect = nil; dragHandle = nil }
         .onContinuousHover { phase in
             switch phase {

@@ -29,6 +29,10 @@ struct ViewerModelChecks {
         }
         try await MultiWindowChecks.run(photo: photo)
         if CommandLine.arguments.contains("--window-routing-only") { return }
+        if CommandLine.arguments.contains("--crop-leave-only") {
+            try await CropLeaveChecks.run(photo: photo)
+            return
+        }
         let model = EditorModel()
         model.sidePanel = .edit
         model.open(photo, viewingOnly: true)

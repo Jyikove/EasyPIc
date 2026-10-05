@@ -40,6 +40,12 @@ extension EditorModel {
     }
     func requestEditorExit(then continuation: (() -> Void)? = nil, includingEarlierChanges: Bool = false) {
         guard canPerformEditorActions else { return }
+        if cropping {
+            finishCrop { [weak self] in
+                self?.requestEditorExit(then: continuation, includingEarlierChanges: includingEarlierChanges)
+            }
+            return
+        }
         pendingEditorExitAction = continuation
         guard editorSessionHasChanges || (includingEarlierChanges && dirty) else { finishEditorExit(); return }
         editorExitUsesReplacement = canReplaceOriginal

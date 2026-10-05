@@ -43,7 +43,7 @@ struct EasyPicApp: App {
             }
             CommandGroup(replacing: .undoRedo) {
                 Button(L10n.text("撤销")) { model.chooseEditorTool(.undo) }.keyboardShortcut("z").disabled(!model.toolEnabled(.undo))
-                Button(L10n.text("重做")) { model.chooseEditorTool(.redo) }.keyboardShortcut("z", modifiers: [.command, .shift]).disabled(!model.toolEnabled(.redo))
+                Button(L10n.text("重做")) { model.chooseEditorTool(.redo) }.keyboardShortcut("y").disabled(!model.toolEnabled(.redo))
             }
             CommandGroup(after: .windowSize) {
                 Button(L10n.text("切换全屏")) { delegate.editorWindow?.toggleFullScreen(nil) }
@@ -60,7 +60,7 @@ struct EasyPicApp: App {
                 Divider()
                 Button(L10n.text("将当前帧设为封面"), action: model.setLiveCover).disabled(!model.canEdit || model.livePhoto == nil)
                 Button(L10n.text("裁剪"), action: model.beginCrop).keyboardShortcut("k").disabled(!model.canEdit)
-                Button(L10n.text("应用裁剪"), action: model.commitCrop).keyboardShortcut(.return, modifiers: []).disabled(!model.canApplyCrop)
+                Button(L10n.text("应用裁剪"), action: model.commitCrop).disabled(!model.canApplyCrop)
                 Button(L10n.text("取消裁剪"), action: model.cancelCrop).keyboardShortcut(.escape, modifiers: []).disabled(!model.cropping || model.busy)
                 Button(L10n.text("退出画笔"), action: model.closeToolDetails).keyboardShortcut(.escape, modifiers: []).disabled(!model.brushMode || !model.canPerformEditorActions)
                 Button(L10n.text("适应窗口"), action: model.resetZoom).keyboardShortcut("0").disabled(model.image == nil)

@@ -72,9 +72,10 @@ struct BrushToolControls: View {
         let _ = languageSettings.language
         VStack(alignment: .leading, spacing: 14) {
             if model.brushTool == .pixelate || model.brushTool == .blur {
-                GlassSegmentedPicker(selection: $model.brushTool,
-                                     options: [(L10n.text("像素模糊"), .pixelate), (L10n.text("高斯模糊"), .blur)])
-                .accessibilityElement(children: .contain).accessibilityLabel(L10n.text("马赛克样式"))
+                MosaicEffectSlider(value: effectBinding)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel(L10n.text("马赛克视觉效果"))
+                .accessibilityValue(model.brushTool == .pixelate ? L10n.text("Pixel") : L10n.text("Gaussian"))
             }
             HStack(spacing: 8) {
                 Text(L10n.text("直径"))
@@ -100,6 +101,56 @@ struct BrushToolControls: View {
                 Button(L10n.text("重新取样")) { model.cloneSource=nil }.quickHelp(L10n.text("先点击画布设置取样点，再拖动绘制；Option 点击重新取样。"))
             }
         }.disabled(model.busy)
+    }
+    private var effectBinding: Binding<Double> {
+        Binding(
+            get: { model.brushTool == .pixelate ? 0.25 : 0.75 },
+            set: { model.brushTool = $0 < 0.5 ? .pixelate : .blur }
+        )
+    }
+}
+
+private struct MosaicEffectSlider: View {
+    @Binding var value: Double
+    @GestureState private var dragging = false
+    var body: some View {
+        GeometryReader { geometry in
+            let inset: CGFloat = 3
+            let trackWidth = max(1, geometry.size.width - inset * 2)
+            let segment = trackWidth / 2
+            let selectedX = value < 0.5 ? 0 : segment
+            ZStack(alignment: .leading) {
+                HStack(spacing: 0) {
+                    Text(L10n.text("Pixel")).frame(maxWidth: .infinity)
+                    Text(L10n.text("Gaussian")).frame(maxWidth: .infinity)
+                }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.primary.opacity(0.72))
+                .padding(.horizontal, 8)
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(EasyPicGlass.accent.opacity(0.24))
+                    .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
+                    .frame(width: segment, height: 26)
+                    .offset(x: selectedX)
+                    .animation(.easeOut(duration: 0.16), value: value < 0.5)
+            }
+            .padding(inset)
+            .glassSurface(.control, radius: 12, selected: true, interactive: true)
+            .frame(height: 32)
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0).updating($dragging) { _, state, _ in
+                state = true
+            }.onChanged { event in
+                let fraction = min(1, max(0, (event.location.x - inset) / (geometry.size.width - inset * 2)))
+                value = fraction < 0.5 ? 0.25 : 0.75
+            }.onEnded { event in
+                withAnimation(.easeOut(duration: 0.16)) {
+                    value = event.location.x < geometry.size.width / 2 ? 0.25 : 0.75
+                }
+            })
+        }
+        .frame(minWidth: 160, maxWidth: .infinity, minHeight: 32, maxHeight: 32)
     }
 }
 struct BrushOverlay: View {

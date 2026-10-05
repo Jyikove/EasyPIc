@@ -57,7 +57,7 @@ struct EditorView: View {
         .padding(.horizontal, windowInset)
         .padding(.bottom, windowInset)
         .padding(.top, windowInset - toolbarBottomSpacing)
-        .frame(minWidth: minimumWindowWidth, minHeight: 600, alignment: .topLeading)
+        .frame(minWidth: minimumWindowWidth, minHeight: minimumWindowWidth, alignment: .topLeading)
         .onPreferenceChange(SidebarWidthPreference.self) { width in
             sidebarWidth = width > 0 ? width + 12 : 0
         }
