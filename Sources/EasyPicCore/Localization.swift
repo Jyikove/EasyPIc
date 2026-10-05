@@ -116,6 +116,7 @@ public enum L10n {
         "已保存项目 · ": "Project saved · ",
         "项目已打开 · 可继续编辑": "Project opened · Ready to edit",
         "关于 EasyPic": "About EasyPic",
+        "关闭窗口": "Close Window",
         "打开图片或文件夹…": "Open Image or Folder…",
         "保存并替换原图": "Save & Replace",
         "替换原图？": "Replace Original?",

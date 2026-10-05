@@ -23,6 +23,10 @@ struct ViewerModelChecks {
     @MainActor static func main() async throws {
         let folder = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("build/ViewerFixtures")
         let photo = folder.appendingPathComponent("TextSample.png")
+        if CommandLine.arguments.contains("--full-resolution-only") {
+            try await FullResolutionChecks.run()
+            return
+        }
         try await MultiWindowChecks.run(photo: photo)
         if CommandLine.arguments.contains("--window-routing-only") { return }
         let model = EditorModel()

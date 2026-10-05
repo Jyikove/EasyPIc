@@ -124,7 +124,7 @@ extension EditorModel {
             do {
                 let (base, preview) = try await Task.detached(priority: .userInitiated) {
                     let base = try cachedBase ?? DocumentEngine.renderBase(doc, resources: assets)
-                    return (base, try DocumentEngine.render(doc, resources: assets, base: base, maxDimension: 1600))
+                    return (base, try DocumentEngine.render(doc, resources: assets, base: base))
                 }.value
                 documentHistory = next; baseImage = base; image = base; documentPreview = preview
                 if !doc.layers.contains(where: { $0.id == selectedLayerID }) { selectedLayerID = nil }
@@ -156,8 +156,7 @@ extension EditorModel {
                 try await Task.sleep(for: .milliseconds(55))
                 guard !Task.isCancelled else { return }
                 let preview = try await Task.detached(priority: .userInitiated) {
-                    try DocumentEngine.render(doc, resources: assets, base: base,
-                                              maxDimension: 1200)
+                    try DocumentEngine.render(doc, resources: assets, base: base)
                 }.value
                 guard !Task.isCancelled else { return }; documentPreview = preview
             } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
@@ -211,7 +210,7 @@ extension EditorModel {
                 let (doc, assets, base, preview) = try await Task.detached {
                     let (doc, assets) = try DocumentEngine.load(url)
                     let base = try DocumentEngine.renderBase(doc, resources: assets)
-                    return (doc, assets, base, try DocumentEngine.render(doc, resources: assets, base: base, maxDimension: 1600))
+                    return (doc, assets, base, try DocumentEngine.render(doc, resources: assets, base: base))
                 }.value
                 cancelBrush(); previewTask?.cancel(); playback.clear(); livePlayback.clear()
                 livePhoto = nil; missingLivePair = false; mediaInfo = nil; originalTypeIdentifier = nil

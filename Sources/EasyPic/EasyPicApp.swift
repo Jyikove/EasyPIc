@@ -32,6 +32,9 @@ struct EasyPicApp: App {
             }
             CommandGroup(replacing: .newItem) {
                 Button(L10n.text("打开图片或文件夹…"), action: model.openPanel).keyboardShortcut("o")
+                Button(L10n.text("关闭窗口")) {
+                    NSApp.keyWindow?.performClose(nil)
+                }.keyboardShortcut("w")
             }
             CommandGroup(replacing: .saveItem) {
                 Button(L10n.text("保存并替换原图")) { model.chooseEditorTool(.replaceOriginal) }.disabled(!model.canReplaceOriginal)
@@ -178,6 +181,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { showEditor?() }
         return true
+    }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if allowTermination { return .terminateNow }

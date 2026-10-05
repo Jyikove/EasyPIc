@@ -4,6 +4,7 @@ import EasyPicCore
 struct MultiWindowChecks {
     @MainActor static func run(photo: URL) async throws {
         let delegate = AppDelegate()
+        try ViewerModelChecks.expect(delegate.applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared), "最后一个窗口关闭后未退出")
         let first = EditorModel()
         var requests: [URL] = []
         let second = photo.deletingLastPathComponent().appendingPathComponent("RotatedSample.jpg")
