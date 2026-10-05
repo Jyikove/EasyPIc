@@ -99,6 +99,7 @@ private struct EditorWindowRoot: View {
     let initialURL: URL?
     @StateObject private var model = EditorModel()
     @State private var opened = false
+    @State private var loadedURL: URL?
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         EditorView(model: model, delegate: delegate)
@@ -108,10 +109,25 @@ private struct EditorWindowRoot: View {
                 delegate.openEditor = { openWindow(id: "editor", value: $0) }
                 guard !opened else { return }
                 opened = true
-                if let initialURL { model.open(initialURL, viewingOnly: true) }
+                loadInitialURL(initialURL)
                 delegate.ready(model)
             }
+            // WindowGroup may populate its value after the view first appears.
+            // A nil launch value must not permanently mark the document loaded.
+            .onChange(of: initialURL) { _, url in loadInitialURL(url) }
+            .onOpenURL { url in
+                if model.image == nil && !model.busy && model.error == nil {
+                    loadInitialURL(url)
+                } else if model.fileURL != url {
+                    openWindow(id: "editor", value: url)
+                }
+            }
             .onDisappear { model.playback.pause(); model.livePlayback.pause() }
+    }
+    private func loadInitialURL(_ url: URL?) {
+        guard let url, loadedURL != url else { return }
+        loadedURL = url
+        model.open(url, viewingOnly: true)
     }
 }
 
@@ -158,10 +174,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-    }
-    func application(_ sender: NSApplication, openFiles filenames: [String]) {
-        openURLs(filenames.map { URL(fileURLWithPath: $0) })
-        sender.reply(toOpenOrPrint: .success)
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { showEditor?() }
