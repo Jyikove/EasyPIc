@@ -71,6 +71,8 @@ struct EditorView: View {
                 toolbarButton(L10n.text("逆时针旋转 90°"), "arrow.counterclockwise", disabled: !model.viewerControlsEnabled || !model.canTransform || model.brushMode) { model.apply(.counterclockwise) }
                 toolbarButton(L10n.text("编辑"), "pencil.tip", disabled: !model.canPerformEditorActions, selected: model.sidePanel == .edit) { model.toggleEditor() }
                 }
+                .padding(.horizontal, 4)
+                .padding(.vertical, 3)
                 .background(ToolbarSpacingReader { toolbarBottomSpacing = $0 })
             }
         }
@@ -154,8 +156,8 @@ struct EditorView: View {
     }
 
     private func toolbarButton(_ title: String, _ icon: String, disabled: Bool, selected: Bool = false, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Label(title, systemImage: icon).frame(width: 32, height: 28).contentShape(Rectangle()) }
-            .buttonStyle(GlassButtonStyle(selected: selected, radius: 9, horizontalPadding: 0, verticalPadding: 0))
+        Button(action: action) { Label(title, systemImage: icon).frame(width: 28, height: 20).contentShape(Rectangle()) }
+            .buttonStyle(GlassButtonStyle(selected: selected, radius: 7, horizontalPadding: 0, verticalPadding: 0))
             .labelStyle(.iconOnly).quickHelp(title).accessibilityLabel(title)
             .foregroundStyle(selected ? accent : .primary)
             .disabled(disabled)
