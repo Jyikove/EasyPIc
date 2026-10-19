@@ -188,6 +188,7 @@ struct ImageCanvas: View {
     @ObservedObject var model: EditorModel
     let image: CGImage
     @State private var panOffset: CGSize = .zero
+    @State private var panDragOrigin: CGSize?
 
     var body: some View {
         let _ = languageSettings.language
@@ -217,24 +218,42 @@ struct ImageCanvas: View {
                 .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 2)
+                    .onChanged { value in
+                        guard model.viewerControlsEnabled else { return }
+                        let origin = panDragOrigin ?? panOffset
+                        panDragOrigin = origin
+                        panOffset = CGSize(width: origin.width + value.translation.width,
+                                           height: origin.height + value.translation.height)
+                    }
+                    .onEnded { _ in panDragOrigin = nil },
+                including: model.viewerControlsEnabled ? .all : .none
+            )
             .background(CanvasInputBridge { event, point in
                 guard !model.cropping else { return }
+                let zoomFactor: Double
                 if event.type == .scrollWheel {
-                    panOffset.width += event.scrollingDeltaX
-                    panOffset.height += event.scrollingDeltaY
+                    // Keep wheel-down zooming in, regardless of Natural Scrolling.
+                    let delta = Double(event.scrollingDeltaY) * (event.isDirectionInvertedFromDevice ? -1 : 1)
+                    guard delta != 0 else { return }
+                    zoomFactor = exp(-delta * (event.hasPreciseScrollingDeltas ? 0.005 : 0.05))
                 } else {
-                    let next = min(8, max(0.1, model.zoom * (1 + event.magnification)))
-                    let ratio = next / model.zoom
-                    panOffset = CGSize(width: (panOffset.width + geometry.size.width / 2 - point.x) * ratio + point.x - geometry.size.width / 2,
-                                       height: (panOffset.height + geometry.size.height / 2 - point.y) * ratio + point.y - geometry.size.height / 2)
-                    model.zoom = next
+                    zoomFactor = 1 + Double(event.magnification)
                 }
+                let next = min(8, max(0.1, model.zoom * zoomFactor))
+                let ratio = next / model.zoom
+                panOffset = CGSize(width: (panOffset.width + geometry.size.width / 2 - point.x) * ratio + point.x - geometry.size.width / 2,
+                                   height: (panOffset.height + geometry.size.height / 2 - point.y) * ratio + point.y - geometry.size.height / 2)
+                model.zoom = next
             })
             .clipped()
             .onAppear { model.brushCanvasScale = scale }
             .onChange(of: scale) { _, scale in model.brushCanvasScale = scale }
-            .onChange(of: model.fileURL) { _, _ in panOffset = .zero }
-            .onChange(of: model.viewportReset) { _, _ in panOffset = .zero }
+            .onChange(of: model.fileURL) { _, _ in panOffset = .zero; panDragOrigin = nil }
+            .onChange(of: model.viewportReset) { _, _ in panOffset = .zero; panDragOrigin = nil }
+            .onChange(of: model.viewerControlsEnabled) { _, enabled in if !enabled { panDragOrigin = nil } }
         }
     }
 
