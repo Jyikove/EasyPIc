@@ -2,7 +2,8 @@ import SwiftUI
 import AppKit
 import EasyPicCore
 
-enum ViewerPanel { case thumbnails, text, edit }
+enum ViewerPanel { case thumbnails, text, qr, edit }
+enum RecognitionPresentation { case all, separate }
 
 extension EditorModel {
     var viewerControlsEnabled: Bool { sidePanel != .edit && canBrowse }
@@ -12,44 +13,80 @@ extension EditorModel {
         viewerControlsEnabled && currentIndex.map { $0 + 1 < browsingFiles.count } == true
     }
 
+    var isRecognitionPanel: Bool { sidePanel == .text || sidePanel == .qr }
+    var hasRecognitionSelection: Bool { sidePanel == .text }
+
     func togglePanel(_ panel: ViewerPanel) {
         if panel == .edit { toggleEditor(); return }
         guard canSwitchPanel else { return }
         finishInlineText { [weak self] in
             guard let self else { return }
             self.cancelBrush(); self.activeEditorTool = nil
+            self.clearRecognition()
             self.sidePanel = self.sidePanel == panel ? nil : panel
-            if self.sidePanel == .text { self.recognizeText() }
-            else { self.clearRecognition() }
+            self.recognitionRegion = self.sidePanel == .text ? CGRect(x: 0, y: 0, width: 1, height: 1) : nil
+            if self.sidePanel == .text {
+                self.recognitionPresentation = .all
+                self.resetZoom()
+            }
+            self.recognizeText()
         }
     }
 
     func clearRecognition() {
         recognitionTask?.cancel(); recognitionTask = nil; recognitionID = UUID()
         recognitionSource = nil; recognizedText = ""; recognizingText = false; recognitionError = nil
+        recognitionResult = ImageRecognitionResult(); recognitionScrollTarget = nil; highlightedRecognitionID = nil
+    }
+
+    func recognizeRegion(_ region: CGRect?) {
+        clearRecognition()
+        recognitionRegion = sidePanel == .text ? (region ?? CGRect(x: 0, y: 0, width: 1, height: 1)) : nil
+        recognizeText()
     }
 
     func recognizeText() {
         let displayed = livePhoto != nil || isReadOnly ? image : (documentPreview ?? image)
-        guard sidePanel == .text, !busy, let source = displayed else { return }
+        guard isRecognitionPanel, !busy, let source = displayed else { return }
         guard recognitionSource !== source else { return }
         clearRecognition()
+        let textMode = sidePanel == .text
+        if textMode && recognitionRegion == nil { recognitionRegion = CGRect(x: 0, y: 0, width: 1, height: 1) }
         recognitionSource = source
         let id = recognitionID
         recognizingText = true
-        let snapshot = livePhoto == nil && !isReadOnly ? document : nil
-        let assets = resources
+        let edits = liveHistory.edits
+        let liveKey = livePhoto == nil ? "" : "\(edits.crop):\(String(describing: edits.coverTime))"
+        let region = textMode ? recognitionRegion : nil
+        let key = contentID.uuidString + ":" + (document?.contentKey ?? "poster") + liveKey + String(describing: region) + (textMode ? ":text" : ":qr")
+        if let cached = recognitionCache[key] {
+            recognitionResult = cached; recognizedText = cached.text; recognizingText = false; return
+        }
+        let cancellation = RecognitionCancellation()
+        let trace = InteractionMetrics.shared.begin(textMode ? "TextRecognition" : "QRRecognition")
         recognitionTask = Task {
             do {
-                let text = try await Task.detached(priority: .userInitiated) {
-                    let fullSize = try snapshot.map { try DocumentEngine.render($0, resources: assets) } ?? source
-                    return try ViewerTools.recognizeText(in: fullSize)
-                }.value
+                let work = Task.detached(priority: .userInitiated) {
+                    InteractionMetrics.shared.mark(trace, "VisionBegin")
+                    let result = try ViewerTools.recognize(in: source, region: region, detectText: textMode,
+                                                           detectQRCodes: !textMode, cancellation: cancellation.install)
+                    InteractionMetrics.shared.mark(trace, "VisionReady")
+                    return result
+                }
+                let result = try await withTaskCancellationHandler {
+                    try await work.value
+                } onCancel: {
+                    work.cancel(); cancellation.cancel()
+                }
                 guard !Task.isCancelled, recognitionID == id else { return }
-                recognizedText = text; recognizingText = false
+                recognitionCache[key] = result
+                recognitionCacheOrder.removeAll { $0 == key }; recognitionCacheOrder.append(key)
+                while recognitionCacheOrder.count > 8 { recognitionCache.removeValue(forKey: recognitionCacheOrder.removeFirst()) }
+                recognitionResult = result; recognizedText = result.text; recognizingText = false
+                visualTraceID = trace; InteractionMetrics.shared.mark(trace, "RecognitionPublished")
             } catch {
                 guard !Task.isCancelled, recognitionID == id else { return }
-                recognitionError = L10n.text("无法识别文字：") + error.localizedDescription
+                recognitionError = L10n.text(textMode ? "无法识别文字：" : "无法识别二维码：") + error.localizedDescription
                 recognizingText = false
             }
         }
@@ -62,8 +99,8 @@ private actor ThumbnailCache {
     init() { cache.totalCostLimit = 32 * 1024 * 1024; cache.countLimit = 256 }
     func image(for url: URL) throws -> CGImage {
         try Task.checkCancellation()
-        let attributes = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
-        let key = "\(url.path):\(attributes?.contentModificationDate?.timeIntervalSince1970 ?? 0):\(attributes?.fileSize ?? 0)" as NSString
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let key = "\(url.path):\((attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0):\(attributes?[.size] ?? 0):\(attributes?[.systemFileNumber] ?? 0)" as NSString
         if let cached = cache.object(forKey: key) { return cached.image }
         let image = try ViewerTools.thumbnail(url)
         try Task.checkCancellation()
@@ -143,33 +180,77 @@ private struct FolderThumbnail: View {
 struct TextRecognitionPanel: View {
     @EnvironmentObject private var languageSettings: AppLanguageSettings
     @ObservedObject var model: EditorModel
+    private var textMode: Bool { model.sidePanel == .text }
+    private var copyText: String {
+        if !textMode { return model.recognitionResult.codes.map(\.payload).joined(separator: "\n") }
+        return model.recognitionPresentation == .all ? model.recognitionResult.flowingText : model.recognizedText
+    }
     var body: some View {
         let _ = languageSettings.language
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
+            if textMode {
+                GlassSlidingPicker(selection: $model.recognitionPresentation,
+                                   options: [(L10n.text("全部"), .all), (L10n.text("分条"), .separate)])
+                    .accessibilityLabel(L10n.text("文字显示方式"))
+            }
             HStack {
-                Text(L10n.text("提取文本")).font(.headline)
+                if !textMode { Text(L10n.text("二维码")).font(.headline) }
                 Spacer()
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(model.recognizedText, forType: .string)
-                } label: { Image(systemName: "doc.on.doc") }
-                .quickHelp(L10n.text("复制全部文本")).accessibilityLabel(L10n.text("复制全部文本"))
-                .buttonStyle(GlassButtonStyle()).disabled(model.recognizedText.isEmpty || model.recognizingText || model.busy)
+                ClipboardCopyButton(text: copyText, title: L10n.text("复制全部文本"))
+                    .disabled(model.recognizingText || copyText.isEmpty)
             }
             if model.recognizingText || model.busy {
                 HStack { ProgressView().controlSize(.small); Text(L10n.text("正在识别…")).foregroundStyle(.secondary) }
+                Spacer(minLength: 0)
             } else if let error = model.recognitionError {
                 Text(L10n.display(error)).font(.callout).foregroundStyle(.secondary)
-                Button(L10n.text("重试")) { model.clearRecognition(); model.recognizeText() }.buttonStyle(GlassButtonStyle())
-            } else if model.recognizedText.isEmpty {
+                Button(L10n.text("重试")) { model.clearRecognition(); model.recognizeText() }
+                Spacer(minLength: 0)
+            } else if textMode && model.recognitionResult.lines.isEmpty {
                 Text(L10n.text("未识别到文字")).foregroundStyle(.secondary)
-            } else {
-                RecognizedTextView(text: model.recognizedText)
+                Spacer(minLength: 0)
+            } else if textMode && model.recognitionPresentation == .all {
+                RecognizedTextView(text: model.recognitionResult.flowingText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView(showsIndicators: false) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            if textMode {
+                                if model.recognitionResult.lines.isEmpty { Text(L10n.text("未识别到文字")).foregroundStyle(.secondary) }
+                                ForEach(model.recognitionResult.lines) { line in resultRow(line.text, id: line.id) }
+                            } else {
+                                if model.recognitionResult.codes.isEmpty { Text(L10n.text("未识别到二维码")).foregroundStyle(.secondary) }
+                                ForEach(model.recognitionResult.codes) { code in
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        resultRow(code.payload, id: code.id)
+                                        if let url = URL(string: code.payload), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+                                            Button(L10n.text("打开链接")) { NSWorkspace.shared.open(url) }
+                                        }
+                                    }.id(code.id)
+                                }
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .onChange(of: model.recognitionScrollTarget) { _, id in
+                        if let id { proxy.scrollTo(id, anchor: .center) }
+                    }
+                }
             }
         }
-        .padding(18).frame(width: 300).frame(maxHeight: .infinity, alignment: .topLeading)
+        .buttonStyle(GlassButtonStyle()).font(.system(size: 12))
+        .padding(16).frame(width: 300).frame(maxHeight: .infinity, alignment: .topLeading)
         .glassSurface(.panel, radius: 20)
+    }
+    private func resultRow(_ text: String, id: UUID) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            ClipboardCopyButton(text: text, title: L10n.text("复制")) { model.highlightedRecognitionID = id }
+        }
+        .padding(8).glassSurface(.input, radius: 8, selected: model.highlightedRecognitionID == id)
+        .contentShape(Rectangle()).onTapGesture { model.highlightedRecognitionID = id }
+        .onHover { if $0 { model.highlightedRecognitionID = id } }
+        .id(id)
     }
 }
 
@@ -195,6 +276,9 @@ private struct RecognizedTextView: NSViewRepresentable {
         view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         view.autoresizingMask = [.width]
         view.textContainer?.widthTracksTextView = true
+        view.textContainer?.lineBreakMode = .byWordWrapping
+        let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 4
+        view.defaultParagraphStyle = paragraph
         view.textContainer?.containerSize = NSSize(width: scroll.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
         scroll.documentView = view
         return scroll
@@ -207,5 +291,20 @@ private struct RecognizedTextView: NSViewRepresentable {
             view.scrollRangeToVisible(NSRange(location: 0, length: 0))
         }
         view.setAccessibilityLabel(L10n.text("提取文本"))
+    }
+}
+
+/// Covers cancellation both before and after Vision creates its request.
+private final class RecognitionCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var action: (() -> Void)?
+    private var cancelled = false
+    func install(_ action: @escaping () -> Void) {
+        lock.lock(); self.action = action; let shouldCancel = cancelled; lock.unlock()
+        if shouldCancel { action() }
+    }
+    func cancel() {
+        lock.lock(); cancelled = true; let action = action; lock.unlock()
+        action?()
     }
 }

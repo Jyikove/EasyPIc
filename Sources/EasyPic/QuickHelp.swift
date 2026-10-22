@@ -60,9 +60,13 @@ private final class QuickHelpPresenter {
                                      backing: .buffered, defer: false)
         self.panel = panel
         panel.level = .popUpMenu; panel.isOpaque = false; panel.backgroundColor = .clear
-        panel.hasShadow = true; panel.ignoresMouseEvents = true; panel.hidesOnDeactivate = true
+        // A rectangular window shadow plus a clipped glass shadow leaves dark
+        // right-angle remnants at the lower corners. Draw one padded round shadow.
+        panel.hasShadow = false; panel.ignoresMouseEvents = true; panel.hidesOnDeactivate = true
         panel.isReleasedWhenClosed = false
-        let host = NSHostingView(rootView: QuickHelpBubble(text: text))
+        let host = QuickHelpHostingView(rootView: QuickHelpBubble(text: text))
+        host.wantsLayer = true; host.layer?.backgroundColor = NSColor.clear.cgColor
+        host.layer?.isOpaque = false
         let size = host.fittingSize
         panel.contentView = host; panel.setContentSize(size)
         let pointer = NSEvent.mouseLocation
@@ -86,7 +90,15 @@ private struct QuickHelpBubble: View {
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 10).padding(.vertical, 7)
             .frame(width: width, alignment: .leading)
-            .glassSurface(.floating, radius: 8)
+            .glassSurface(.panel, radius: 8)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .compositingGroup()
+            .shadow(color: .black.opacity(0.20), radius: 4, y: 2)
+            .padding(10)
             .preferredColorScheme(.dark)
     }
+}
+
+private final class QuickHelpHostingView: NSHostingView<QuickHelpBubble> {
+    override var isOpaque: Bool { false }
 }

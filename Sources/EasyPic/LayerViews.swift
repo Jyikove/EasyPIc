@@ -56,8 +56,6 @@ struct LayerInspector: View {
                         Text(L10n.text("编辑文字…")).frame(maxWidth: fullWidthActions ? .infinity : nil, alignment: .center)
                     }.buttonStyle(GlassButtonStyle())
                 }
-                numeric(L10n.text("中心 X"), value: layer.center.x) { $0.center.x = $1 }
-                numeric(L10n.text("中心 Y"), value: layer.center.y) { $0.center.y = $1 }
                 numeric(L10n.text("宽度"), value: layer.size.width, range: 1...1_000_000) { l, v in let factor = max(1, v) / l.size.width; l.text?.scale(by: factor); l.size.width *= factor; l.size.height *= factor }
                 numeric(L10n.text("高度"), value: layer.size.height, range: 1...1_000_000) { l, v in let factor = max(1, v) / l.size.height; l.text?.scale(by: factor); l.size.width *= factor; l.size.height *= factor }
                 numeric(L10n.text("旋转 °"), value: layer.angle) { $0.angle = $1 }
@@ -75,7 +73,7 @@ struct LayerInspector: View {
     @ViewBuilder private var layerActionButtons: some View {
         layerButton(L10n.text("置顶"), action: "top")
         layerButton(L10n.text("置底"), action: "bottom")
-        layerButton(L10n.text("复制"), action: "duplicate")
+        layerButton(L10n.text("复制图层"), action: "duplicate")
         layerButton(L10n.text("删除"), action: "delete")
     }
     private func layerButton(_ title: String, action: String) -> some View {
@@ -95,11 +93,59 @@ struct LayerInspector: View {
     }
 }
 
+enum LayerCanvasHitTesting {
+    static let rotationOffset: CGFloat = 28
+    static let controlHitRadius: CGFloat = 14
+    static func corner(_ layer: StickerLayer, x: Double, y: Double) -> CGPoint {
+        let a = layer.angle * .pi / 180
+        return CGPoint(x: layer.center.x + x * layer.size.width / 2 * cos(a) - y * layer.size.height / 2 * sin(a),
+                       y: layer.center.y + x * layer.size.width / 2 * sin(a) + y * layer.size.height / 2 * cos(a))
+    }
+    static func rotationPoint(_ layer: StickerLayer, scale: Double) -> CGPoint {
+        let top = corner(layer, x: 0, y: -1), angle = layer.angle * .pi / 180
+        return CGPoint(x: top.x + sin(angle) * rotationOffset / scale, y: top.y - cos(angle) * rotationOffset / scale)
+    }
+    static func deletionPoint(_ layer: StickerLayer, scale: Double, canvasSize: CGSize? = nil) -> CGPoint {
+        let top = corner(layer, x: -1, y: -1), angle = layer.angle * .pi / 180
+        var point = CGPoint(x: top.x + (sin(angle) - cos(angle)) * 20 / scale,
+                            y: top.y - (sin(angle) + cos(angle)) * 20 / scale)
+        if let canvasSize {
+            let dx = min(20 / scale, canvasSize.width / 2), dy = min(20 / scale, canvasSize.height / 2)
+            point.x = min(canvasSize.width - dx, max(dx, point.x))
+            point.y = min(canvasSize.height - dy, max(dy, point.y))
+        }
+        return point
+    }
+    static func hitsControl(_ layer: StickerLayer, point: CGPoint, scale: Double, canvasSize: CGSize? = nil) -> Bool {
+        let corners = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+        for (x, y) in corners {
+            let p = corner(layer, x: x, y: y)
+            if hypot(point.x - p.x, point.y - p.y) * scale < controlHitRadius { return true }
+        }
+        let knob = rotationPoint(layer, scale: scale), delete = deletionPoint(layer, scale: scale, canvasSize: canvasSize)
+        return hypot(point.x - knob.x, point.y - knob.y) * scale < controlHitRadius ||
+            hypot(point.x - delete.x, point.y - delete.y) * scale < controlHitRadius
+    }
+}
+
+extension EditorModel {
+    func canPanBehindLayers(at point: CGPoint, scale: Double) -> Bool {
+        guard sidePanel == .edit, canPerformEditorActions, !cropping, !brushMode,
+              activeEditorTool == .sticker || activeEditorTool == .text else { return false }
+        if let selectedLayer, selectedLayer.visible,
+           LayerCanvasHitTesting.hitsControl(selectedLayer, point: point, scale: scale, canvasSize: document?.size) { return false }
+        if textEditing { return draftLayer?.visible != true || draftLayer?.contains(point) != true }
+        return sceneIndex.hit(point, layers: document?.layers ?? []) == nil
+    }
+}
+
 struct LayerCanvasOverlay: View {
+    @EnvironmentObject private var frameClock: CanvasFrameClock
     @EnvironmentObject private var languageSettings: AppLanguageSettings
     @ObservedObject var model: EditorModel
     let scale: Double
     let size: CGSize
+    @State private var guides: [SnapGuide] = []
     @State private var initial: StickerLayer?
     @State private var mode = ""
     @State private var opposite: CGPoint?
@@ -110,43 +156,82 @@ struct LayerCanvasOverlay: View {
     }
     private func display(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x * scale, y: p.y * scale) }
     private func corner(_ layer: StickerLayer, x: Double, y: Double) -> CGPoint {
-        let a = layer.angle * .pi / 180
-        return CGPoint(x: layer.center.x + x * layer.size.width / 2 * cos(a) - y * layer.size.height / 2 * sin(a),
-                       y: layer.center.y + x * layer.size.width / 2 * sin(a) + y * layer.size.height / 2 * cos(a))
+        LayerCanvasHitTesting.corner(layer, x: x, y: y)
     }
+
     var body: some View {
         let _ = languageSettings.language
         ZStack(alignment: .topLeading) {
             Color.clear.contentShape(Rectangle())
+            ForEach(Array(guides.enumerated()), id: \.offset) { _, guide in
+                Path { path in
+                    let start = guide.vertical ? CGPoint(x: guide.position, y: guide.from) : CGPoint(x: guide.from, y: guide.position)
+                    let end = guide.vertical ? CGPoint(x: guide.position, y: guide.to) : CGPoint(x: guide.to, y: guide.position)
+                    path.move(to: display(start)); path.addLine(to: display(end))
+                }.stroke(Color.cyan, style: StrokeStyle(lineWidth: 1, dash: [4, 3])).allowsHitTesting(false)
+            }
             if let layer = model.selectedLayer, layer.visible {
                 let points = [corner(layer, x: -1, y: -1), corner(layer, x: 1, y: -1), corner(layer, x: 1, y: 1), corner(layer, x: -1, y: 1)]
-                Path { path in path.addLines(points.map(display)); path.closeSubpath() }.stroke(outline, lineWidth: 1)
-                ForEach(1..<4, id: \.self) { index in
-                    Rectangle().fill(outline).frame(width: 10, height: 10).position(display(points[index]))
+                Path { path in path.addLines(points.map(display)); path.closeSubpath() }
+                    .stroke(outline.opacity(0.9), style: StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round))
+                ForEach(0..<4, id: \.self) { index in
+                    Circle().fill(.white)
+                        .overlay(Circle().strokeBorder(EasyPicGlass.blue.opacity(0.95), lineWidth: 1.3))
+                        .frame(width: 10, height: 10)
+                        .shadow(color: .black.opacity(0.22), radius: 1.5, y: 0.5)
+                        .position(display(points[index]))
                 }
                 let top = corner(layer, x: 0, y: -1)
-                let a = layer.angle * .pi / 180
-                let knob = CGPoint(x: top.x + sin(a) * 24 / scale, y: top.y - cos(a) * 24 / scale)
+                let knob = LayerCanvasHitTesting.rotationPoint(layer, scale: scale)
                 Path { path in path.move(to: display(top)); path.addLine(to: display(knob)) }.stroke(outline, lineWidth: 1)
-                Circle().fill(outline).frame(width: 12, height: 12).position(display(knob))
+                Image(systemName: "arrow.clockwise").font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(EasyPicGlass.blue)
+                    .frame(width: 22, height: 22).background(.white, in: Circle())
+                    .overlay(Circle().strokeBorder(EasyPicGlass.blue.opacity(0.9), lineWidth: 1))
+                    .shadow(color: .black.opacity(0.18), radius: 2, y: 1)
+                    .position(display(knob))
             }
         }
         .frame(width: size.width, height: size.height)
         .contentShape(Rectangle())
+        .background(FramePresentationProbe(clock: frameClock))
         .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+            frameClock.submit("LayerDrag", at: ProcessInfo.processInfo.systemUptime - max(0, Date().timeIntervalSince(value.time))) { handleDrag(value) }
+        }.onEnded { _ in
+            frameClock.flush("LayerDrag")
+            if initial != nil, let draft = model.draftLayer { model.updateLayer(draft, commit: !model.textEditing) }
+            initial = nil; opposite = nil; mode = ""; guides = []
+        })
+        .simultaneousGesture(SpatialTapGesture(count: 2).onEnded { value in
+            guard model.canUseLayers else { return }
+            let point = CGPoint(x: value.location.x / scale, y: value.location.y / scale)
+            if let layer = model.sceneIndex.hit(point, layers: model.document?.layers ?? []), layer.text != nil {
+                model.selectedLayerID = layer.id; model.editText()
+            }
+        })
+        .overlay(alignment: .topLeading) { deleteButton }
+        .task(id: model.image.map { ObjectIdentifier($0) }) {
+            guard let image = model.image else { outline = .white; return }
+            let light = await Task.detached(priority: .userInitiated) { SelectionContrast.isLight(image) }.value
+            guard !Task.isCancelled else { return }
+            outline = light ? .black : .white
+        }
+        .onDisappear { frameClock.cancel("LayerDrag") }
+        .allowsHitTesting(canManipulate)
+    }
+    private func handleDrag(_ value: DragGesture.Value) {
             guard canManipulate else { return }
             let start = CGPoint(x: value.startLocation.x / scale, y: value.startLocation.y / scale)
             let point = CGPoint(x: value.location.x / scale, y: value.location.y / scale)
             if initial == nil {
                 if let selected = model.selectedLayer, selected.visible {
-                    let a = selected.angle * .pi / 180, top = corner(selected, x: 0, y: -1)
-                    let knob = CGPoint(x: top.x + sin(a) * 24 / scale, y: top.y - cos(a) * 24 / scale)
-                    if hypot(start.x - knob.x, start.y - knob.y) * scale < 12 {
+                    let knob = LayerCanvasHitTesting.rotationPoint(selected, scale: scale)
+                    if hypot(start.x - knob.x, start.y - knob.y) * scale < LayerCanvasHitTesting.controlHitRadius {
                         initial = selected; mode = "rotate"; initialPointerAngle = atan2(start.y - selected.center.y, start.x - selected.center.x)
                     } else {
-                        for (x, y) in [(1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                        for (x, y) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
                             let c = corner(selected, x: x, y: y)
-                            if hypot(start.x - c.x, start.y - c.y) * scale < 12 {
+                            if hypot(start.x - c.x, start.y - c.y) * scale < LayerCanvasHitTesting.controlHitRadius {
                                 initial = selected; mode = "resize"; opposite = corner(selected, x: -x, y: -y); break
                             }
                         }
@@ -157,14 +242,19 @@ struct LayerCanvasOverlay: View {
                         guard let draft = model.draftLayer, draft.visible, draft.contains(start) else { return }
                         initial = draft; mode = "move"
                     } else {
-                        guard let layer = model.document?.layers.reversed().first(where: { $0.visible && $0.contains(start) }) else { model.selectedLayerID = nil; return }
+                        guard let layer = model.sceneIndex.hit(start, layers: model.document?.layers ?? []) else { model.selectedLayerID = nil; return }
                         model.selectedLayerID = layer.id; initial = layer; mode = "move"
                     }
                 }
             }
             guard var layer = initial else { return }
             switch mode {
-            case "move": layer.center.x += value.translation.width / scale; layer.center.y += value.translation.height / scale
+            case "move":
+                layer.center.x += value.translation.width / scale; layer.center.y += value.translation.height / scale
+                if !NSEvent.modifierFlags.contains(.option), let doc = model.document {
+                    let snapped = LayerSnapping.move(layer, canvas: doc.size, layers: doc.layers, index: model.sceneIndex, scale: scale, previous: guides)
+                    layer.center = snapped.center; guides = snapped.guides
+                } else { guides = [] }
             case "rotate": layer.angle += (atan2(point.y - layer.center.y, point.x - layer.center.x) - initialPointerAngle) * 180 / .pi
             case "resize":
                 if let opposite {
@@ -178,45 +268,36 @@ struct LayerCanvasOverlay: View {
                 }
             default: break
             }
-            model.updateLayer(layer, commit: false)
-        }.onEnded { _ in
-            if initial != nil, let draft = model.draftLayer { model.updateLayer(draft, commit: !model.textEditing) }
-            initial = nil; opposite = nil; mode = ""
-        })
-        .simultaneousGesture(SpatialTapGesture(count: 2).onEnded { value in
-            guard model.canUseLayers else { return }
-            let point = CGPoint(x: value.location.x / scale, y: value.location.y / scale)
-            if let layer = model.document?.layers.reversed().first(where: { $0.visible && $0.contains(point) }), layer.text != nil {
-                model.selectedLayerID = layer.id; model.editText()
+            if mode == "rotate", !NSEvent.modifierFlags.contains(.option) {
+                let step = NSEvent.modifierFlags.contains(.shift) ? 15.0 : 90.0
+                let snapped = (layer.angle / step).rounded() * step
+                if NSEvent.modifierFlags.contains(.shift) || abs(snapped - layer.angle) <= 3 { layer.angle = snapped }
             }
-        })
-        .overlay(alignment: .topLeading) {
+            model.latestInteractionID = frameClock.currentTrace
+            model.updateLayer(layer, commit: false)
+    }
+    @ViewBuilder private var deleteButton: some View {
+
             if let layer = model.selectedLayer, layer.visible {
                 Button { model.layerAction("delete") } label: {
                     Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 24, height: 24)
-                        .overlay(Circle().strokeBorder(outline, lineWidth: 1))
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color(red: 0.84, green: 0.24, blue: 0.30))
+                        .frame(width: 20, height: 20)
+                        .background(.white, in: Circle())
+                        .overlay(Circle().strokeBorder(EasyPicGlass.blue.opacity(0.65), lineWidth: 0.8))
+                        .shadow(color: .black.opacity(0.18), radius: 2, y: 1)
                         .contentShape(Circle())
                 }
-                .buttonStyle(GlassButtonStyle(destructive: true, radius: 12, horizontalPadding: 0, verticalPadding: 0))
+                .buttonStyle(.plain)
                 .disabled(!model.canUseLayers)
                 .quickHelp(L10n.text("删除图层（可撤销）"))
                 .accessibilityLabel(L10n.text("删除图层"))
-                .position(display(corner(layer, x: -1, y: -1)))
+                .position(display(LayerCanvasHitTesting.deletionPoint(layer, scale: scale,
+                    canvasSize: CGSize(width: size.width / scale, height: size.height / scale))))
             }
         }
-        .task(id: model.image.map { ObjectIdentifier($0) }) {
-            guard let image = model.image else { outline = .white; return }
-            let light = await Task.detached(priority: .userInitiated) {
-                SelectionContrast.isLight(image)
-            }.value
-            guard !Task.isCancelled else { return }
-            outline = light ? .black : .white
-        }
-        .allowsHitTesting(canManipulate)
-    }
+
 }
 
 enum SelectionContrast {

@@ -36,7 +36,7 @@ extension EditorModel {
     }
     func cancelTextEditing() {
         textEditing = false; draftLayer = nil; previewTask?.cancel()
-        if let history = documentHistory { renderDocument(history) }
+        // The committed full-resolution snapshot was never replaced by a draft.
     }
     func editText() {
         guard canUseLayers, let layer = selectedLayer, layer.text != nil else { return }
@@ -49,23 +49,23 @@ struct InlineTextEditor: View {
     @EnvironmentObject private var languageSettings: AppLanguageSettings
     @ObservedObject var model: EditorModel
     @State var layer: StickerLayer
-    @FocusState private var contentFocused: Bool
+    @State private var contentFocused = false
     private var text: TextLayer { layer.text ?? TextLayer() }
     private func binding<T>(_ key: WritableKeyPath<TextLayer, T>) -> Binding<T> {
         Binding(get: { text[keyPath: key] }, set: { value in
             var next = text; next[keyPath: key] = value
+            let needsLayout = next.layoutKey != text.layoutKey
             layer.text = next
-            layer.size = next.naturalSize
+            if needsLayout { layer.size = next.naturalSize }
             model.updateLayer(layer, commit: false)
         })
     }
     var body: some View {
         let _ = languageSettings.language
         VStack(alignment: .leading, spacing: 12) {
-            TextEditor(text: binding(\.content)).focused($contentFocused)
-                .scrollContentBackground(.hidden).scrollIndicators(.hidden)
-                .padding(6).frame(height: 110)
+            AdaptiveTextInput(text: binding(\.content), focused: $contentFocused)
                 .glassSurface(.input, radius: 12, selected: contentFocused)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             EasyPicFontButton(selection: binding(\.fontName))
             number(L10n.text("字号"), \.fontSize, 1...4096)
             HStack(spacing: 6) {
@@ -108,16 +108,15 @@ struct InlineTextEditor: View {
             number(L10n.text("字距"), \.letterSpacing, -100...1000)
             number(L10n.text("行距"), \.lineSpacing, 0...1000)
             Divider()
+            color(L10n.text("背景颜色"), \.backgroundColor)
+            number(L10n.text("背景内边距"), \.padding, 0...1000)
+            number(L10n.text("圆角半径"), \.cornerRadius, 0...1000, step: 5)
+            Divider()
             color(L10n.text("描边颜色"), \.strokeColor); number(L10n.text("描边宽度"), \.strokeWidth, 0...200)
             color(L10n.text("阴影颜色"), \.shadowColor)
             number(L10n.text("阴影 X"), \.shadowX, -1000...1000); number(L10n.text("阴影 Y"), \.shadowY, -1000...1000)
             number(L10n.text("阴影模糊"), \.shadowBlur, 0...500)
-            Divider()
-            color(L10n.text("背景颜色"), \.backgroundColor)
-            number(L10n.text("背景内边距"), \.padding, 0...1000)
-            number(L10n.text("圆角半径 px"), \.cornerRadius, 0...1000, step: 5)
         }
-        .onAppear { contentFocused = true }
         .onChange(of: model.draftLayer) { _, draft in
             if let draft, draft.id == layer.id { layer = draft }
         }

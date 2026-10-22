@@ -1,0 +1,54 @@
+<?xml version='1.0' encoding='utf-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title description">
+  <title id="title">EasyPic application icon</title>
+  <desc id="description">Light-blue rounded app icon with transparent margins, candy-purple corner brackets, blue metallic gear and matte navy hub.</desc>
+  <defs>
+    <linearGradient id="blue-white-chrome" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#174a88" />
+      <stop offset="19%" stop-color="#296bae" />
+      <stop offset="38%" stop-color="#4a91cb" />
+      <stop offset="49%" stop-color="#9dcef1" />
+      <stop offset="58%" stop-color="#65a0d0" />
+      <stop offset="79%" stop-color="#91c3e6" />
+      <stop offset="100%" stop-color="#c1e5f7" />
+    </linearGradient>
+    <radialGradient id="hub-metal" cx="36%" cy="30%" r="95%" fx="36%" fy="30%">
+      <stop offset="0%" stop-color="#2c486f" />
+      <stop offset="55%" stop-color="#233d63" />
+      <stop offset="100%" stop-color="#1b3152" />
+    </radialGradient>
+    <linearGradient id="hub-rim" x1="20%" y1="0%" x2="80%" y2="100%">
+      <stop offset="0%" stop-color="#83a8cd" />
+      <stop offset="48%" stop-color="#4c7099" />
+      <stop offset="100%" stop-color="#315176" />
+    </linearGradient>
+    <filter id="metal-shadow" x="-12%" y="-12%" width="124%" height="124%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="6" stdDeviation="5" flood-color="#1c4b82" flood-opacity="0.16" />
+    </filter>
+    <path id="metal-motif" d="       M 578 200       C 562 201 558 206 557 222       L 553 274       C 510 285 470 303 433 328       L 382 286       C 372 277 367 277 359 284       L 287 350       C 281 356 281 362 287 368       L 334 421       C 307 462 289 500 280 539       L 213 549       C 199 551 197 556 197 570       L 197 652       C 197 665 199 672 213 675       L 278 686       C 288 725 305 762 327 792       L 276 845       C 268 853 268 857 275 864       L 342 932       C 351 941 357 941 366 934       L 427 890       C 466 918 507 938 552 948       L 557 1009       C 558 1023 563 1027 579 1027       L 679 1027       C 692 1027 696 1021 697 1008       L 701 948       C 746 938 787 918 823 890       L 883 934       C 891 941 897 939 904 933       L 973 861       C 980 854 980 850 972 843       L 925 793       C 948 759 964 721 974 686       L 1039 675       C 1053 673 1056 669 1056 652       L 1056 569       C 1056 553 1052 548 1038 545       L 974 538       C 964 497 946 458 920 422       L 963 372       C 970 364 970 358 962 350       L 895 285       C 887 277 882 277 874 284       L 822 329       C 783 304 742 285 701 275       L 696 219       C 695 204 689 200 674 200       C 643 198 609 198 578 200 Z          M 480 390         C 522 359 572 343 626 343         C 682 343 735 359 777 390         Q 783 395 777 401         L 654 522         Q 626 514 598 522         L 479 402         Q 472 396 480 390 Z          M 846 460         C 910 548 910 669 846 755         Q 842 762 836 756         L 715 640         Q 724 612 715 583         L 836 460         Q 841 453 846 460 Z          M 776 814         Q 782 820 775 825         C 688 884 565 884 479 825         Q 472 820 478 814         L 599 699         Q 627 707 654 699         L 776 814 Z          M 416 460         L 539 582         Q 530 611 539 640         L 416 754         Q 409 761 404 753         C 343 669 345 546 404 462         Q 409 453 416 460 Z M 710 611 A 84 84 0 1 0 542 611 A 84 84 0 1 0 710 611 Z" fill-rule="evenodd" clip-rule="evenodd" />
+    <linearGradient id="gear-bevel" x1="35%" y1="0%" x2="65%" y2="100%">
+      <stop offset="0%" stop-color="#d1eeff" />
+      <stop offset="37%" stop-color="#92c8ed" />
+      <stop offset="66%" stop-color="#477fb1" />
+      <stop offset="100%" stop-color="#285b8c" />
+    </linearGradient>
+    <clipPath id="gear-face-clip" clipPathUnits="userSpaceOnUse">
+      <use href="#metal-motif" clip-rule="evenodd" />
+    </clipPath>
+  </defs>
+  <g id="app-icon-artwork" transform="translate(48 48) scale(0.90625)">
+    <rect id="light-blue-background" width="1024" height="1024" fill="#eaf4ff" rx="212" />
+    <g fill="none" stroke="#c4a0f0" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" id="corner-frame" transform="translate(2 0) scale(4)">
+      <path d="M87 35H58C44.745 35 34 45.745 34 59V88" />
+      <path d="M168 35H197C210.255 35 221 45.745 221 59V88" />
+      <path d="M34 168V197C34 210.255 44.745 221 58 221H87" />
+      <path d="M221 168V197C221 210.255 210.255 221 197 221H168" />
+    </g>
+    <g id="easypic-metal-core" transform="translate(512 512) scale(0.64) translate(-626 -613)" stroke-linejoin="round" stroke-linecap="round">
+      <use href="#metal-motif" fill="url(#blue-white-chrome)" stroke="#000000" stroke-width="3" filter="url(#metal-shadow)" />
+      <use href="#metal-motif" fill="none" stroke="url(#gear-bevel)" stroke-width="12" clip-path="url(#gear-face-clip)" opacity="0.85" />
+      <use href="#metal-motif" fill="none" stroke="#000000" stroke-width="3" />
+      <circle id="blue-metal-hub" cx="626" cy="611" r="84" fill="url(#hub-metal)" stroke="url(#hub-rim)" stroke-width="5" />
+    </g>
+  </g>
+</svg>

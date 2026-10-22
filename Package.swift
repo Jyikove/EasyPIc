@@ -7,8 +7,7 @@ let package = Package(
     products: [.executable(name: "EasyPic", targets: ["EasyPic"])],
     targets: [
         .target(name: "EasyPicCore"),
-        .executableTarget(name: "EasyPic", dependencies: ["EasyPicCore"]),
-        .executableTarget(name: "EasyPicChecks", dependencies: ["EasyPicCore"], path: "Tests/EasyPicCoreTests", resources: [.copy("Fixtures")])
+        .executableTarget(name: "EasyPic", dependencies: ["EasyPicCore"])
     ],
     swiftLanguageModes: [.v5]
 )

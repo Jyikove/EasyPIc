@@ -13,9 +13,9 @@
 	<key>CFBundleIdentifier</key>
 	<string>local.jyikove.easypic</string>
 	<key>CFBundleVersion</key>
-	<string>12</string>
+	<string>13</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>1.1</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>LSMinimumSystemVersion</key>
@@ -35,6 +35,18 @@
 			<array>
 				<string>public.image</string>
 				<string>com.apple.quicktime-movie</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>SVG Image</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.svg-image</string>
 			</array>
 		</dict>
 		<dict>

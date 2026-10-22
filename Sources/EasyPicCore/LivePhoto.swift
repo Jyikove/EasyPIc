@@ -84,6 +84,7 @@ public enum LivePhotoEngine {
 
     /// Match embedded identifiers, never a filename alone. MOV input resolves back to the photo.
     public static func discover(_ input: URL) async throws -> LivePhotoAsset? {
+        if input.pathExtension.lowercased() == "svg" { return nil }
         if let extracted = try MotionPhotoEngine.extract(input) {
             return try await inspect(photo: input, video: extracted.resource.url, identifier: "embedded-motion",
                                      embeddedVideo: extracted.resource, preferredCoverTime: extracted.coverTime)
@@ -125,12 +126,12 @@ public enum LivePhotoEngine {
         guard size.width > 0, size.height > 0 else { throw LivePhotoFailure.invalidVideo }
         let rate = Double(try await track.load(.nominalFrameRate))
         let fps = rate.isFinite && rate > 0 ? rate : 30
-        let image = try ImageEngine.load(photo).image
+        let photoSize = try ImageEngine.dimensions(photo)
         let metadataTime = try? await coverTime(in: asset)
         let time = preferredCoverTime ?? metadataTime ?? duration / 2
         return LivePhotoAsset(photoURL: photo, videoURL: video, identifier: identifier, duration: duration,
                               originalCoverTime: min(max(0, time), max(0, duration - 1 / fps)),
-                              photoSize: CGSize(width: image.width, height: image.height), frameRate: fps, embeddedVideo: embeddedVideo)
+                              photoSize: photoSize, frameRate: fps, embeddedVideo: embeddedVideo)
     }
 
     public static func coverTime(in asset: AVAsset) async throws -> Double? {

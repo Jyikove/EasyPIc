@@ -2,6 +2,7 @@ import Foundation
 import CoreImage
 import ImageIO
 import UniformTypeIdentifiers
+import AppKit
 
 public enum ImageFailure: LocalizedError {
     case unreadable, renderFailed, invalidCrop, writeFailed, cannotReplace
@@ -50,6 +51,7 @@ public struct LoadedImage {
     public let image: CGImage
     public let mediaInfo: ImageMediaInfo
     public let typeIdentifier: String
+    public var svgImage: NSImage? = nil
     public var frameCount: Int { mediaInfo.frameCount }
 }
 
@@ -59,7 +61,23 @@ public enum ImageEngine {
     private static let destinationTypes = Set(CGImageDestinationCopyTypeIdentifiers() as? [String] ?? [])
     public static func canEncode(typeIdentifier: String) -> Bool { destinationTypes.contains(typeIdentifier) }
 
+    /// Dimensions and orientation require metadata only, without decoding photo pixels.
+    public static func dimensions(_ url: URL) throws -> CGSize {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue,
+              width.isFinite, height.isFinite, width > 0, height > 0 else { throw ImageFailure.unreadable }
+        let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+        return (5...8).contains(orientation) ? CGSize(width: height, height: width) : CGSize(width: width, height: height)
+    }
     public static func load(_ url: URL) throws -> LoadedImage {
+        if url.pathExtension.lowercased() == "svg" {
+            let rendered = try SVGImageRenderer.render(url)
+            return LoadedImage(image: rendered.bitmap,
+                               mediaInfo: ImageMediaInfo(frameCount: 1, animation: nil, isGIF: false, isSVG: true),
+                               typeIdentifier: UTType.svg.identifier, svgImage: rendered.vector)
+        }
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let decoded = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
         else { throw ImageFailure.unreadable }
@@ -71,8 +89,11 @@ public enum ImageEngine {
     }
 
     public static func render(_ original: CGImage, operations: [EditOperation]) throws -> CGImage {
+        try Task.checkCancellation()
+        guard !operations.isEmpty else { return original }
         var image = CIImage(cgImage: original)
         for operation in operations {
+            try Task.checkCancellation()
             switch operation {
             case .clockwise: image = image.oriented(.right)
             case .counterclockwise: image = image.oriented(.left)

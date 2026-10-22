@@ -56,7 +56,7 @@ extension EditorModel {
         guard canUseLayers else { return }
         startEditorSessionIfNeeded()
         sidePanel = .edit; activeEditorTool = .sticker
-        let panel = NSOpenPanel(); EasyPicGlass.prepareFilePanel(panel); panel.allowedContentTypes = [.image]
+        let panel = NSOpenPanel(); EasyPicGlass.prepareFilePanel(panel); panel.allowedContentTypes = [.image, .svg]
         choosingOpenLocation = true
         panel.begin { [weak self] response in
             guard let self else { return }; self.choosingOpenLocation = false
@@ -93,18 +93,19 @@ extension EditorModel {
         Task {
             do {
                 let loaded = try await Task.detached {
-                    try urls.map { url -> (URL, LoadedImage) in
+                    try urls.map { url -> (URL, LoadedImage, Data?) in
                         let image = try ImageEngine.load(url)
-                        guard !image.mediaInfo.isReadOnly else { throw ImageFailure.unreadable }
-                        return (url, image)
+                        guard !image.mediaInfo.isReadOnly || image.mediaInfo.isSVG else { throw ImageFailure.unreadable }
+                        return (url, image, image.mediaInfo.isSVG ? try Data(contentsOf: url) : nil)
                     }
                 }.value
                 guard var doc = document else { busy = false; return }
-                for (url, loaded) in loaded {
+                for (url, loaded, svg) in loaded {
                     let id = UUID(), size = doc.size
                     resources[id] = loaded.image
                     let ratio = min(1, min(size.width * 0.5 / CGFloat(loaded.image.width), size.height * 0.5 / CGFloat(loaded.image.height)))
-                    let layer = StickerLayer(resourceID: id, name: url.lastPathComponent, center: CGPoint(x: size.width / 2, y: size.height / 2), size: CGSize(width: max(1, CGFloat(loaded.image.width) * ratio), height: max(1, CGFloat(loaded.image.height) * ratio)))
+                    var layer = StickerLayer(resourceID: id, name: url.lastPathComponent, center: CGPoint(x: size.width / 2, y: size.height / 2), size: CGSize(width: max(1, CGFloat(loaded.image.width) * ratio), height: max(1, CGFloat(loaded.image.height) * ratio)))
+                    layer.svgData = svg
                     doc.layers.append(layer); selectedLayerID = layer.id
                 }
                 busy = false; commitDocument(doc)
@@ -115,53 +116,68 @@ extension EditorModel {
         guard var next = documentHistory else { return }; next.apply(doc); renderDocument(next)
     }
     func renderDocument(_ next: DocumentHistory) {
-        previewTask?.cancel(); draftLayer = nil
+        // Keep the visible draft until its committed composite is ready.
+        previewTask?.cancel()
+        renderRevision = UUID()
+        let revision = renderRevision
+        let trace = InteractionMetrics.shared.begin("DocumentCommit", parent: latestInteractionID)
+        latestInteractionID = nil
         busy = true
         let assets = resources, doc = next.document
         let cachedBase = document?.operations == doc.operations && document?.baseResourceID == doc.baseResourceID && document?.baseStrokes == doc.baseStrokes ? baseImage : nil
-        Task {
+        previewTask = Task {
             var succeeded = false
             do {
-                let (base, preview) = try await Task.detached(priority: .userInitiated) {
-                    let base = try cachedBase ?? DocumentEngine.renderBase(doc, resources: assets)
-                    return (base, try DocumentEngine.render(doc, resources: assets, base: base))
-                }.value
+                let (base, preview) = try await renderService.render(doc, resources: assets, base: cachedBase, trace: trace)
+                if let rotation = rotationTransition { await rotation.waitForCompletion() }
+                guard renderRevision == revision else { return }
+                rotationTransition = nil
                 documentHistory = next; baseImage = base; image = base; documentPreview = preview
+                draftLayer = nil; visualTraceID = trace
+                InteractionMetrics.shared.mark(trace, "PreviewPublished")
                 if !doc.layers.contains(where: { $0.id == selectedLayerID }) { selectedLayerID = nil }
                 cropRect = nil; status = L10n.text("可编辑图层 · 原图保留")
+                collectUnusedResources()
                 succeeded = true
-            } catch { self.error = error.localizedDescription }
+            } catch is CancellationError { }
+            catch {
+                guard renderRevision == revision else { return }
+                self.error = error.localizedDescription
+            }
+            guard renderRevision == revision else { return }
+            if !succeeded { draftLayer = nil; rotationTransition = nil }
+            previewTask = nil
             busy = false
             let continuation = pendingEditorAction; pendingEditorAction = nil
             if succeeded { continuation?() }
         }
     }
     func updateLayer(_ layer: StickerLayer, commit: Bool) {
-        guard (canUseLayers || textEditing), var doc = document else { return }
-        if let i = doc.layers.firstIndex(where: { $0.id == layer.id }) { doc.layers[i] = layer }
-        else {
+        guard (canUseLayers || textEditing), let document else { return }
+        let index = document.layers.firstIndex(where: { $0.id == layer.id })
+        if index == nil {
             guard textEditing, activeEditorTool == .text, layer.text != nil, draftLayer?.id == layer.id else { return }
-            doc.layers.append(layer)
         }
-        if commit { commitDocument(doc); return }
-        draftLayer = layer
-        previewTask?.cancel()
-        let assets = resources, base = baseImage
-        previewTask = Task {
-            do {
-                // Text controls publish on every keystroke/step. Give the editor a
-                // short quiet window before starting a full document composite;
-                // cancellation cannot stop synchronous Core Graphics work that has
-                // already entered the detached task.
-                try await Task.sleep(for: .milliseconds(55))
-                guard !Task.isCancelled else { return }
-                let preview = try await Task.detached(priority: .userInitiated) {
-                    try DocumentEngine.render(doc, resources: assets, base: base)
-                }.value
-                guard !Task.isCancelled else { return }; documentPreview = preview
-            } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+        if commit {
+            var next = document
+            if let index { next.layers[index] = layer } else { next.layers.append(layer) }
+            commitDocument(next)
+        } else if draftLayer != layer {
+            // A drag publishes only its layer, without copying or compositing the document.
+            draftLayer = layer
         }
     }
+    func collectUnusedResources() {
+        var ids = documentHistory?.referencedResourceIDs ?? []
+        if let savedDocument { ids.formUnion(savedDocument.referencedResourceIDs) }
+        if let session = editorSession {
+            ids.formUnion(session.history?.referencedResourceIDs ?? [])
+            ids.formUnion(session.savedDocument?.referencedResourceIDs ?? [])
+        }
+        if let draftLayer, draftLayer.text == nil { ids.insert(draftLayer.resourceID) }
+        resources = resources.filter { ids.contains($0.key) }
+    }
+
     func layerAction(_ action: String) {
         guard canUseLayers, var doc = document, let i = doc.layers.firstIndex(where: { $0.id == selectedLayerID }) else { return }
         switch action {
@@ -212,8 +228,9 @@ extension EditorModel {
                     let base = try DocumentEngine.renderBase(doc, resources: assets)
                     return (doc, assets, base, try DocumentEngine.render(doc, resources: assets, base: base))
                 }.value
+                renderRevision = UUID(); contentID = UUID(); recognitionCache = [:]; recognitionCacheOrder = []
                 cancelBrush(); previewTask?.cancel(); playback.clear(); livePlayback.clear()
-                livePhoto = nil; missingLivePair = false; mediaInfo = nil; originalTypeIdentifier = nil
+                livePhoto = nil; missingLivePair = false; mediaInfo = nil; originalTypeIdentifier = nil; svgImage = nil
                 resources = assets; original = assets[doc.baseResourceID]; baseImage = base; image = base; documentPreview = preview
                 documentHistory = DocumentHistory(doc); savedDocument = doc; projectURL = url; fileURL = url
                 selectedLayerID = doc.activeLayerID; draftLayer = nil

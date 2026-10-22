@@ -3,31 +3,30 @@ import SwiftUI
 import EasyPicCore
 
 final class GlassBackdropView: NSView {
-    private let frost = NSVisualEffectView()
     private let blueWash = NSView()
     private let glass = NSGlassEffectView()
+    private var reducedTransparency: Bool?
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        frost.material = .underWindowBackground; frost.blendingMode = .behindWindow; frost.state = .active
-        frost.alphaValue = 0.08
         blueWash.wantsLayer = true
+        glass.wantsLayer = true
         glass.style = .clear; glass.cornerRadius = 14
         glass.tintColor = NSColor(calibratedRed: 0.35, green: 0.66, blue: 1, alpha: 0.10)
-        for child in [frost, blueWash, glass] {
+        for child in [blueWash, glass] {
             child.frame = bounds; child.autoresizingMask = [.width, .height]; addSubview(child)
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     static func install(in window: NSWindow, reducedTransparency: Bool) {
-        window.isOpaque = false; window.backgroundColor = .clear
-        window.titlebarAppearsTransparent = true
-        window.appearance = NSAppearance(named: .darkAqua)
-        if window.animationBehavior == .default { window.animationBehavior = .utilityWindow }
         if let backdrop = window.contentView as? GlassBackdropView {
             backdrop.setReducedTransparency(reducedTransparency)
             return
         }
+        window.isOpaque = false; window.backgroundColor = .clear
+        window.titlebarAppearsTransparent = true
+        window.appearance = NSAppearance(named: .darkAqua)
+        if window.animationBehavior == .default { window.animationBehavior = .utilityWindow }
         guard let content = window.contentView else { return }
         let backdrop = GlassBackdropView(frame: content.frame)
         backdrop.setReducedTransparency(reducedTransparency)
@@ -37,10 +36,16 @@ final class GlassBackdropView: NSView {
         content.autoresizingMask = [.width, .height]
         backdrop.glass.contentView = content
     }
+    func setRenderingActive(_ active: Bool) {
+        // Retain a cheap cached layer tree for nonvisible windows during Spaces transitions.
+        glass.layer?.rasterizationScale = window?.backingScaleFactor ?? 2
+        glass.layer?.shouldRasterize = !active
+    }
     func setReducedTransparency(_ reduced: Bool) {
+        guard reducedTransparency != reduced else { return }
+        reducedTransparency = reduced
         blueWash.layer?.backgroundColor = NSColor(calibratedRed: 0.30, green: 0.61, blue: 0.98, alpha: reduced ? 1 : 0.22).cgColor
         glass.style = reduced ? .regular : .clear
-        frost.isHidden = reduced
     }
 }
 

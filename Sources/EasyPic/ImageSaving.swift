@@ -21,13 +21,13 @@ extension EditorModel {
     }
     func saveReplacingOriginal() {
         guard canReplaceOriginal, let doc = document, let url = fileURL else { return }
-        let assets = resources, quality = jpegQuality
+        let assets = resources, quality = jpegQuality, committed = documentPreview
         busy = true
         Task {
             var succeeded = false
             do {
                 let result = try await Task.detached(priority: .userInitiated) {
-                    let result = try DocumentEngine.render(doc, resources: assets)
+                    let result = try committed ?? DocumentEngine.render(doc, resources: assets)
                     try ImageEngine.replaceExisting(result, at: url, quality: quality)
                     return result
                 }.value
@@ -56,5 +56,6 @@ extension EditorModel {
         documentHistory = history; savedDocument = flattened
         baseImage = rendered; image = rendered; documentPreview = rendered
         checkpointEditorSession()
+        collectUnusedResources()
     }
 }

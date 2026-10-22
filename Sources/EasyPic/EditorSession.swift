@@ -18,7 +18,9 @@ struct EditorSessionSnapshot {
 
     @MainActor init(_ model: EditorModel) {
         fileURL = model.fileURL; history = model.documentHistory; savedDocument = model.savedDocument
-        resources = model.resources; image = model.image; baseImage = model.baseImage
+        var ids = model.documentHistory?.referencedResourceIDs ?? []
+        ids.formUnion(model.savedDocument?.referencedResourceIDs ?? [])
+        resources = model.resources.filter { ids.contains($0.key) }; image = model.image; baseImage = model.baseImage
         preview = model.documentPreview; selectedLayerID = model.selectedLayerID
         liveHistory = model.liveHistory; exportedLiveEdits = model.exportedLiveEdits
         composition = model.livePlayback.player.currentItem?.videoComposition; status = model.status
@@ -61,6 +63,7 @@ extension EditorModel {
         previewTask?.cancel(); previewTask = nil; draftLayer = nil; textEditing = false
         cancelCrop(); cancelBrush(); activeEditorTool = nil; sidePanel = nil
         clearRecognition()
+        collectUnusedResources()
         continuation?()
     }
     func discardEditorSession() {

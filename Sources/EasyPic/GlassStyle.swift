@@ -9,7 +9,11 @@ enum EasyPicGlass {
     static let panelBlue = Color(red: 0.48, green: 0.69, blue: 0.94)
     enum Surface { case canvas, panel, floating, input, control }
     static func edge(_ surface: Surface, highlighted: Bool = false) -> LinearGradient {
-        let top: Double = highlighted ? 0.64 : (surface == .control ? 0.36 : 0.44)
+        if highlighted {
+            return LinearGradient(colors: [.white.opacity(0.58), Color(red: 0.80, green: 0.91, blue: 1).opacity(0.58)],
+                                  startPoint: .top, endPoint: .bottom)
+        }
+        let top: Double = surface == .control ? 0.36 : 0.44
         return LinearGradient(stops: [
             .init(color: .white.opacity(top), location: 0),
             .init(color: Color(red: 0.80, green: 0.91, blue: 1).opacity(0.24), location: 0.22),
@@ -25,8 +29,8 @@ enum EasyPicGlass {
 
 extension View {
     func glassSurface(_ surface: EasyPicGlass.Surface = .panel, radius: CGFloat = 20,
-                      selected: Bool = false, interactive: Bool = false) -> some View {
-        modifier(GlassSurfaceModifier(surface: surface, radius: radius, selected: selected, interactive: interactive))
+                      selected: Bool = false, interactive: Bool = false, backgroundOpacity: Double = 1) -> some View {
+        modifier(GlassSurfaceModifier(surface: surface, radius: radius, selected: selected, interactive: interactive, backgroundOpacity: backgroundOpacity))
     }
     func glassWindowBackground() -> some View {
         background(GlassWindowAppearanceBridge())
@@ -46,6 +50,7 @@ private struct GlassSurfaceModifier: ViewModifier {
     let radius: CGFloat
     let selected: Bool
     let interactive: Bool
+    let backgroundOpacity: Double
     private var material: Glass {
         let isPanel = surface == .canvas || surface == .panel
         let alpha = selected ? 0.22 : (surface == .floating ? 0.10 : (isPanel ? 0.08 : 0.055))
@@ -66,11 +71,16 @@ private struct GlassSurfaceModifier: ViewModifier {
     @ViewBuilder private func surfaceContent(_ content: Content) -> some View {
         // Dense controls share the surrounding panel's glass. Independent live
         // refraction and shadows on every text field multiply compositor work.
-        if reduceTransparency || surface == .input || surface == .control {
+        if reduceTransparency || surface == .input || surface == .control || surface == .canvas {
             content.background {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
                     .fill(reduceTransparency ? Color(red: 0.14, green: 0.21, blue: 0.30) :
-                            EasyPicGlass.blue.opacity(selected ? 0.30 : 0.13))
+                            (surface == .canvas ? EasyPicGlass.panelBlue.opacity(0.055) : EasyPicGlass.blue.opacity(selected ? 0.30 : 0.13)))
+            }
+        } else if backgroundOpacity < 1 {
+            content.background {
+                Color.clear.glassEffect(material, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+                    .opacity(backgroundOpacity)
             }
         } else {
             content.glassEffect(material, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
@@ -159,6 +169,63 @@ struct GlassSegmentedPicker<Value: Hashable>: View {
             }
         }
         .padding(3).glassSurface(.input, radius: 11)
+    }
+}
+
+/// A single sliding selection surface shared by Mosaic and export format controls.
+struct GlassSlidingPicker<Value: Hashable>: View {
+    @Binding var selection: Value
+    let options: [(String, Value)]
+    var symbols: [String]? = nil
+    @Environment(\.isEnabled) private var enabled
+    private var index: Int { options.firstIndex { $0.1 == selection } ?? 0 }
+    var body: some View {
+        GeometryReader { geometry in
+            let segment = max(1, geometry.size.width - 6) / CGFloat(max(1, options.count))
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(EasyPicGlass.accent.opacity(0.24))
+                    .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
+                    .frame(width: segment, height: 26)
+                    .offset(x: CGFloat(index) * segment)
+                    .animation(.easeOut(duration: 0.16), value: index)
+                    .allowsHitTesting(false)
+                HStack(spacing: 0) {
+                    ForEach(options.indices, id: \.self) { i in
+                        Button { selection = options[i].1 } label: {
+                            Group {
+                                if let symbols, symbols.indices.contains(i) {
+                                    Image(systemName: symbols[i]).font(.system(size: 14, weight: .medium))
+                                } else { Text(options[i].0) }
+                            }
+                            .frame(width: segment, height: 26).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .quickHelp(options[i].0)
+                        .accessibilityLabel(options[i].0)
+                    }
+                }
+                .font(.system(size: 11, weight: .medium)).foregroundStyle(.primary.opacity(0.8))
+            }
+            .padding(3).frame(height: 32)
+            .glassSurface(.control, radius: 12, selected: true, interactive: true)
+            .contentShape(Rectangle())
+            .simultaneousGesture(DragGesture(minimumDistance: 2).onChanged { event in
+                guard enabled, !options.isEmpty else { return }
+                guard abs(event.translation.width) >= abs(event.translation.height) else { return }
+                let i = min(options.count - 1, max(0, Int((event.location.x - 3) / segment)))
+                selection = options[i].1
+            })
+        }
+        .frame(height: 32).opacity(enabled ? 1 : 0.4)
+        .accessibilityElement(children: .ignore)
+        .accessibilityValue(options.isEmpty ? "" : options[index].0)
+        .accessibilityAdjustableAction { direction in
+            guard enabled, !options.isEmpty else { return }
+            let i = min(options.count - 1, max(0, index + (direction == .increment ? 1 : -1)))
+            selection = options[i].1
+        }
     }
 }
 
@@ -256,10 +323,15 @@ struct GlassWindowAppearanceBridge: NSViewRepresentable {
 }
 private final class GlassAppearanceView: NSView {
     var reduceTransparency = false
+    private var appearanceScheduled = false
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); scheduleAppearance() }
     func scheduleAppearance() {
+        guard !appearanceScheduled else { return }
+        appearanceScheduled = true
         DispatchQueue.main.async { [weak self] in
-            guard let self, let window = self.window else { return }
+            guard let self else { return }
+            self.appearanceScheduled = false
+            guard let window = self.window else { return }
             GlassBackdropView.install(in: window, reducedTransparency: self.reduceTransparency)
         }
     }

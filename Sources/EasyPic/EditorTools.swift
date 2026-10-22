@@ -42,7 +42,7 @@ enum EditorTool: String, CaseIterable, Identifiable {
         case .mosaic: return "square.grid.3x3.fill"
         case .repair: return "eraser.fill"
         case .replaceOriginal: return "square.and.arrow.down"
-        case .saveAs: return "square.and.arrow.down.on.square"
+        case .saveAs: return "arrow.down.to.line"
         }
     }
 }
@@ -82,8 +82,9 @@ extension EditorModel {
             error = L10n.text("请先输入有效的文字设置。"); return
         }
         let changed = hasTextDraftChanges
-        textEditing = false; previewTask?.cancel(); draftLayer = nil
+        textEditing = false; previewTask?.cancel()
         guard changed else {
+            draftLayer = nil
             if document?.layers.contains(where: { $0.id == draft.id }) == false { selectedLayerID = nil }
             action(); return
         }
@@ -148,7 +149,7 @@ extension EditorModel {
         case .crop: beginCrop()
         case .solid: brushTool = .solid; beginBrush()
         case .mosaic:
-            if brushTool != .blur && brushTool != .pixelate { brushTool = .pixelate }
+            brushTool = lastMosaicTool
             beginBrush()
         case .repair: brushTool = .repair; brushRectangle = false; beginBrush()
         case .text: beginTextEditing()
@@ -173,18 +174,34 @@ extension EditorModel {
         }
     }
     func saveFromEditor() { finishInlineText { [weak self] in self?.saveProject() } }
+    func saveUsingShortcut() {
+        guard canPerformEditorActions else { return }
+        finishInlineText { [weak self] in
+            guard let self else { return }
+            if self.projectURL != nil { self.saveProject() }
+            else if self.canReplaceOriginal { self.requestOriginalReplacement() }
+            else { self.showExport() }
+        }
+    }
     func exportFromEditor() { finishInlineText { [weak self] in self?.showExport() } }
+}
+
+private struct EditorDetailsWidthPreference: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
 struct EditingSidebar: View {
     @EnvironmentObject private var languageSettings: AppLanguageSettings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var model: EditorModel
+    @State private var detailsWidth: CGFloat = 264
+    private let railTools = EditorTool.allCases.filter { ![.undo, .redo, .replaceOriginal, .saveAs].contains($0) }
     private let buttonHeight: CGFloat = 40
     private let buttonSpacing: CGFloat = 4
     private let railPadding: CGFloat = 6
     private var railHeight: CGFloat {
-        let count = CGFloat(EditorTool.allCases.count)
+        let count = CGFloat(railTools.count)
         return count * buttonHeight + max(0, count - 1) * buttonSpacing + railPadding * 2
     }
     var body: some View {
@@ -194,7 +211,7 @@ struct EditingSidebar: View {
                 ScrollView(showsIndicators: false) {
                     GlassEffectContainer(spacing: 0) {
                     VStack(spacing: buttonSpacing) {
-                        ForEach(EditorTool.allCases) { tool in
+                        ForEach(railTools) { tool in
                             Button { model.chooseEditorTool(tool) } label: {
                                 EditorToolIcon(tool: tool, selected: model.activeEditorTool == tool)
                                     .frame(width: buttonHeight, height: buttonHeight)
@@ -209,6 +226,7 @@ struct EditingSidebar: View {
                     }
                 }
                 .frame(height: min(geometry.size.height, railHeight))
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .glassSurface(.panel, radius: 18)
                 .accessibilityLabel(L10n.text("编辑工具栏"))
                 .frame(maxHeight: .infinity, alignment: .center)
@@ -216,12 +234,15 @@ struct EditingSidebar: View {
             .frame(width: buttonHeight + railPadding * 2)
             if let tool = model.activeEditorTool, tool.showsDetails {
                 ZStack {
-                    EditorToolDetails(model: model, tool: tool).id(tool)
-                        .transition(.opacity)
+                    // Preserve the panel's measured size while its tool changes.
+                    EditorToolDetails(model: model, tool: tool)
                 }
                 .transition(EasyPicMotion.sidebarTransition(reduced: reduceMotion))
             }
         }
+        .onPreferenceChange(EditorDetailsWidthPreference.self) { if $0 > 0 { detailsWidth = $0 } }
+        .preference(key: SidebarWidthPreference.self,
+                    value: model.sidePanel == .edit ? buttonHeight + railPadding * 2 + (model.activeEditorTool?.showsDetails == true ? 10 + detailsWidth : 0) : 0)
         .animation(EasyPicMotion.panelAnimation(reduced: reduceMotion), value: model.activeEditorTool)
     }
 }
@@ -259,17 +280,30 @@ private struct EditorToolIcon: View {
 
 private struct EditorToolDetails: View {
     @EnvironmentObject private var languageSettings: AppLanguageSettings
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var model: EditorModel
     let tool: EditorTool
     @State private var panelSize = CGSize(width: 110, height: 540)
+    private var panelWidth: CGFloat { tool == .solid ? 264 : panelSize.width }
     var body: some View {
         let _ = languageSettings.language
         GeometryReader { geometry in
             ScrollView(showsIndicators: false) {
-                panel.fixedSize(horizontal: true, vertical: true)
-                    .onGeometryChange(for: CGSize.self) { $0.size } action: { panelSize = $0 }
+                ZStack(alignment: .topLeading) {
+                    panel.fixedSize(horizontal: true, vertical: true)
+                        .id(tool)
+                        .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+                            // Measure the natural content, not the animated outer frame.
+                            guard abs(size.width - panelSize.width) > 0.5 || abs(size.height - panelSize.height) > 0.5 else { return }
+                            panelSize = size
+                        }
+                        .transition(.opacity)
+                }
+                .animation(EasyPicMotion.panelAnimation(reduced: reduceMotion), value: tool)
             }
             .frame(height: min(geometry.size.height, panelSize.height))
+            .animation(EasyPicMotion.panelAnimation(reduced: reduceMotion), value: panelSize.height)
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
             .glassSurface(.panel, radius: 20)
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                 guard tool == .sticker else { return false }
@@ -277,7 +311,11 @@ private struct EditorToolDetails: View {
             }
             .frame(maxHeight: .infinity, alignment: .center)
         }
-        .frame(width: panelSize.width)
+        .frame(width: panelWidth)
+        .animation(EasyPicMotion.panelAnimation(reduced: reduceMotion), value: panelWidth)
+        // The native window receives the target once, instead of being retargeted
+        // for every intermediate frame of the SwiftUI width animation.
+        .preference(key: EditorDetailsWidthPreference.self, value: panelWidth)
         .disabled(model.busy)
     }
     private var closeButton: some View {
@@ -289,7 +327,8 @@ private struct EditorToolDetails: View {
     private var minimumContentWidth: CGFloat? {
         switch tool {
         case .text: return model.textEditing ? 220 : nil
-        case .solid, .mosaic, .repair: return 160
+        case .solid: return 240
+        case .mosaic, .repair: return 160
         default: return nil
         }
     }
@@ -313,11 +352,6 @@ private struct EditorToolDetails: View {
                     .disabled(!model.canPerformEditorActions || !model.canApplyCrop)
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
-            } else {
-                HStack {
-                    Spacer()
-                    closeButton
-                }
             }
             VStack(alignment: .leading, spacing: 16) {
                     switch tool {
@@ -333,6 +367,8 @@ private struct EditorToolDetails: View {
                     }
             }
             .frame(minWidth: minimumContentWidth, maxWidth: maximumContentWidth, alignment: .leading)
+            .animation(EasyPicMotion.panelAnimation(reduced: reduceMotion), value: model.brushShape)
+            .animation(EasyPicMotion.panelAnimation(reduced: reduceMotion), value: model.textEditing)
         }
         .font(.system(size: 13)).padding(tool == .crop ? 8 : 12)
     }

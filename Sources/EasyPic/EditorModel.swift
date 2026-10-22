@@ -6,7 +6,13 @@ import AVFoundation
 
 @MainActor
 final class EditorModel: ObservableObject {
-    @Published var documentHistory: DocumentHistory?
+    @Published var documentHistory: DocumentHistory? {
+        didSet { sceneIndex = LayerSpatialIndex(documentHistory?.document.layers ?? []) }
+    }
+    var sceneIndex = LayerSpatialIndex([])
+    var latestInteractionID: UUID?
+    @Published var visualTraceID: UUID?
+    @Published var rotationTransition: RotationTransition?
     @Published var selectedLayerID: UUID?
     @Published var brushTarget = "base"
     @Published var sidePanel: ViewerPanel?
@@ -18,17 +24,23 @@ final class EditorModel: ObservableObject {
     var recognitionTask: Task<Void, Never>?
     var recognitionID = UUID()
     var recognitionSource: CGImage?
+    var contentID = UUID()
+    var recognitionCache: [String: ImageRecognitionResult] = [:]
+    @Published var recognitionResult = ImageRecognitionResult()
+    @Published var recognitionRegion: CGRect?
+    @Published var recognitionPresentation: RecognitionPresentation = .all
+    @Published var highlightedRecognitionID: UUID?
+    @Published var recognitionScrollTarget: UUID?
+    var recognitionCacheOrder: [String] = []
     @Published var brushMode = false
-    @Published var brushTool: BrushTool = .solid
+    @Published var brushTool: BrushTool = .solid {
+        didSet { if brushTool == .pixelate || brushTool == .blur { lastMosaicTool = brushTool } }
+    }
+    var lastMosaicTool: BrushTool = .pixelate
     static let brushSizeRange = 10.0...100.0
-    @Published var brushSize = 40.0
+    @Published var brushConfigurations: [BrushConfigurationGroup: BrushConfiguration] = [:]
     @Published var brushCanvasScale = 1.0
     var brushPreviewDiameter: Double { min(200, max(2, brushSize * brushCanvasScale)) }
-    @Published var brushHardness = 1.0
-    @Published var brushOpacity = 1.0
-    @Published var brushStrength = 16.0
-    @Published var brushColor = TextColor(1,0,0)
-    @Published var brushRectangle = false
     @Published var brushPoints: [CGPoint] = []
     @Published var cloneSource: CGPoint?
     @Published var textEditing = false
@@ -39,15 +51,20 @@ final class EditorModel: ObservableObject {
     var savedDocument: EditorDocument?
     var projectURL: URL?
     var previewTask: Task<Void, Never>?
+    let renderService = DocumentRenderService()
+    var renderRevision = UUID()
     var document: EditorDocument? { documentHistory?.document }
     var selectedLayer: StickerLayer? { draftLayer ?? document?.layers.first { $0.id == selectedLayerID } }
     var canUseLayers: Bool { canTransform }
+    @Published var windowIsRendering = true
     @Published var image: CGImage?
+    @Published var svgImage: NSImage?
+    @Published var svgQuarterTurns = 0
     @Published var fileURL: URL?
     @Published var busy = false {
         didSet {
             guard busy != oldValue else { return }
-            if busy { clearRecognition() }
+            if busy { clearRecognition(); recognitionRegion = nil }
             else { recognizeText() }
         }
     }
@@ -69,6 +86,7 @@ final class EditorModel: ObservableObject {
     var pendingEditorExitAction: (() -> Void)?
     @Published var exportFormat: ExportFormat = .png
     @Published var jpegQuality = 0.92
+    @Published var exportScale = 1.0
     @Published var browsingFiles: [URL] = []
     @Published var mediaInfo: ImageMediaInfo?
     @Published var originalTypeIdentifier: String?
@@ -79,12 +97,14 @@ final class EditorModel: ObservableObject {
     let livePlayback = LivePhotoPlayback()
     var exportedLiveEdits = LivePhotoEdits()
     var original: CGImage?
+    var prefetchTask: Task<Void, Never>?
     var pendingAfterExport: (() -> Void)?
     var isReadOnly: Bool { missingLivePair || mediaInfo?.isReadOnly == true }
     var dirty: Bool { !isReadOnly && image != nil && (livePhoto != nil ? liveHistory.edits != exportedLiveEdits : document != savedDocument) }
     var canUndo: Bool { livePhoto != nil ? liveHistory.canUndo : documentHistory?.canUndo == true }
     var canRedo: Bool { livePhoto != nil ? liveHistory.canRedo : documentHistory?.canRedo == true }
     var canTransform: Bool { canEdit && livePhoto == nil }
+    var canRotate: Bool { canTransform || (svgImage != nil && canBrowse && sidePanel != .edit) }
     var dimensions: String { image.map { "\($0.width) × \($0.height)" } ?? "" }
     var canBrowse: Bool { !busy && !cropping && !exportSheet && !choosingExportLocation && !choosingOpenLocation && !textEditing && pendingOriginalReplacement == nil && !confirmingEditorExit && error == nil }
     var canEdit: Bool { image != nil && !isReadOnly && canBrowse }
@@ -107,6 +127,7 @@ final class EditorModel: ObservableObject {
     }
 
     deinit {
+        prefetchTask?.cancel(); previewTask?.cancel(); recognitionTask?.cancel()
         playbackObservers.forEach(NotificationCenter.default.removeObserver)
     }
 
@@ -127,7 +148,7 @@ final class EditorModel: ObservableObject {
     func openPanel() {
         guard canBrowse else { return }
         let panel = NSOpenPanel(); EasyPicGlass.prepareFilePanel(panel)
-        panel.allowedContentTypes = [.image, .quickTimeMovie, UTType(importedAs: "local.jyikove.easypic.project")]
+        panel.allowedContentTypes = [.image, .svg, .quickTimeMovie, UTType(importedAs: "local.jyikove.easypic.project")]
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.message = L10n.text("选择图片、Live Photo 配套 MOV，或文件夹。Live Photo 原片和视频需在同一文件夹。")
@@ -154,6 +175,7 @@ final class EditorModel: ObservableObject {
 
     private func load(_ input: URL) {
         editorSession = nil
+        prefetchTask?.cancel(); prefetchTask = nil
         if input.pathExtension.lowercased() == "easypic" { loadProject(input); return }
         busy = true
         Task {
@@ -170,8 +192,10 @@ final class EditorModel: ObservableObject {
                         missing = true
                     }
                     let photo = live?.photoURL ?? target
-                    return (try ImageEngine.load(photo), photo, pictures, live, missing)
+                    return (try await ImageLoadingService.shared.image(photo), photo, pictures, live, missing)
                 }.value
+                contentID = UUID(); recognitionCache = [:]; recognitionCacheOrder = []
+                renderRevision = UUID()
                 playback.clear()
                 livePlayback.clear()
                 livePhoto = live
@@ -185,6 +209,7 @@ final class EditorModel: ObservableObject {
                 baseImage = loaded.image; documentPreview = loaded.image
                 original = loaded.image
                 image = loaded.image
+                svgImage = loaded.svgImage; svgQuarterTurns = 0
                 mediaInfo = loaded.mediaInfo
                 originalTypeIdentifier = loaded.typeIdentifier
                 fileURL = target
@@ -198,6 +223,7 @@ final class EditorModel: ObservableObject {
                     livePlayback.restart()
                     status = live.kind + L10n.text(" · 裁剪与封面 · 原件保留")
                 } else if missing { status = L10n.text("Live Photo 原片 · 缺少配套 MOV，仅可查看") }
+                else if loaded.mediaInfo.isSVG { status = L10n.text("SVG · 矢量图片 · 只读查看") }
                 else if loaded.mediaInfo.animation != nil { status = L10n.text("动图 · 只读播放") }
                 else if loaded.mediaInfo.isGIF { status = L10n.text("GIF · 只读查看") }
                 else { status = loaded.frameCount > 1 ? L10n.text("多页图片 · 当前查看和编辑首页") : L10n.text("本地编辑 · 保留原图") }
@@ -206,7 +232,7 @@ final class EditorModel: ObservableObject {
                 Task {
                     let files = await Task.detached { Self.pictures(in: target.deletingLastPathComponent()) }.value
                     guard self.fileURL == target else { return }
-                    if !files.isEmpty { self.browsingFiles = files }
+                    if !files.isEmpty { self.browsingFiles = files; self.prefetchNeighbors() }
                 }
             } catch { self.error = error.localizedDescription }
             busy = false
@@ -215,12 +241,18 @@ final class EditorModel: ObservableObject {
     }
 
     private nonisolated static func pictures(in directory: URL) -> [URL] {
-        let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentTypeKey]
-        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles])) ?? []
-        return files.filter {
-            guard let values = try? $0.resourceValues(forKeys: keys), values.isRegularFile == true else { return false }
-            return values.contentType?.conforms(to: .image) == true
-        }.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        FolderIndexCache.shared.pictures(in: directory)
+    }
+    func prefetchNeighbors() {
+        prefetchTask?.cancel()
+        guard windowIsRendering, let index = currentIndex else { return }
+        let urls = [index + 1, index - 1].filter { browsingFiles.indices.contains($0) }.map { browsingFiles[$0] }
+        prefetchTask = Task.detached(priority: .utility) {
+            for url in urls {
+                guard !Task.isCancelled else { return }
+                try? await ImageLoadingService.shared.prefetch(url)
+            }
+        }
     }
 
     func navigate(_ direction: Int) {
@@ -230,9 +262,18 @@ final class EditorModel: ObservableObject {
     }
 
     func apply(_ operation: EditOperation) {
+        if svgImage != nil { rotateSVG(operation); return }
         guard canTransform else { return }
         guard var doc = document else { return }
-        do { try doc.apply(operation); commitDocument(doc) } catch { self.error = error.localizedDescription }
+        do {
+            latestInteractionID = InteractionMetrics.shared.begin("ImageTransform")
+            try doc.apply(operation)
+            if let preview = documentPreview ?? image {
+                if case .counterclockwise = operation { rotationTransition = RotationTransition(image: preview, angle: -90) }
+                if case .clockwise = operation { rotationTransition = RotationTransition(image: preview, angle: 90) }
+            }
+            commitDocument(doc)
+        } catch { self.error = error.localizedDescription }
     }
 
     func undo() {
@@ -304,7 +345,7 @@ final class EditorModel: ObservableObject {
     }
 
     func resetZoom() { zoom = 1; actualSize = false; viewportReset = UUID() }
-    func showExport() { guard canEdit else { return }; exportSheet = true }
+    func showExport() { guard canEdit else { return }; exportScale = 1; exportSheet = true }
 
     func export() {
         if livePhoto != nil { exportLive(); return }
@@ -330,13 +371,14 @@ final class EditorModel: ObservableObject {
         guard url.resolvingSymlinksInPath().standardizedFileURL != fileURL.resolvingSymlinksInPath().standardizedFileURL else {
             error = L10n.text("请使用新的文件名导出，以保留原图。"); return
         }
-        let format = exportFormat, quality = jpegQuality, snapshot = document, assets = resources
+        let format = exportFormat, quality = jpegQuality, scale = exportScale, snapshot = document, assets = resources
+        let committed = documentPreview
         busy = true
         Task {
             do {
                 let result = try await Task.detached(priority: .userInitiated) {
-                    let result = try snapshot.map { try DocumentEngine.render($0, resources: assets) } ?? image
-                    let data = try ImageEngine.encode(result, format: format, quality: quality)
+                    let result = try committed ?? snapshot.map { try DocumentEngine.render($0, resources: assets) } ?? image
+                    let data = try ImageCompression.encode(result, format: format, quality: quality, scale: scale)
                     try data.write(to: url, options: .atomic)
                     return result
                 }.value

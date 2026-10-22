@@ -6,6 +6,7 @@ import AppKit
 struct EasyPicApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @FocusedValue(\.editorModel) private var focusedModel
+    @State private var recordingTimings = false
     @StateObject private var emptyModel = EditorModel()
     private var model: EditorModel { focusedModel ?? emptyModel }
     @StateObject private var languageSettings = AppLanguageSettings.shared
@@ -37,24 +38,32 @@ struct EasyPicApp: App {
                 }.keyboardShortcut("w")
             }
             CommandGroup(replacing: .saveItem) {
+                Button(L10n.text("保存"), action: model.saveUsingShortcut).keyboardShortcut("s").disabled(!model.canPerformEditorActions)
                 Button(L10n.text("保存并替换原图")) { model.chooseEditorTool(.replaceOriginal) }.disabled(!model.canReplaceOriginal)
-                Button(L10n.text("保存可编辑项目…"), action: model.saveFromEditor).keyboardShortcut("s").disabled(!model.canPerformEditorActions || model.cropping || model.livePhoto != nil)
-                Button(L10n.text("导出图片…"), action: model.exportFromEditor).keyboardShortcut("s", modifiers: [.command, .shift]).disabled(!model.canPerformEditorActions || model.cropping)
+                Button(L10n.text("保存可编辑项目…"), action: model.saveFromEditor).keyboardShortcut("s", modifiers: [.command, .option]).disabled(!model.canPerformEditorActions || model.cropping || model.livePhoto != nil)
+                Button(L10n.text("另存为"), action: model.exportFromEditor).keyboardShortcut("s", modifiers: [.command, .shift]).disabled(!model.canPerformEditorActions)
             }
             CommandGroup(replacing: .undoRedo) {
                 Button(L10n.text("撤销")) { model.chooseEditorTool(.undo) }.keyboardShortcut("z").disabled(!model.toolEnabled(.undo))
-                Button(L10n.text("重做")) { model.chooseEditorTool(.redo) }.keyboardShortcut("y").disabled(!model.toolEnabled(.redo))
+                Button(L10n.text("重做")) { model.chooseEditorTool(.redo) }.keyboardShortcut("z", modifiers: [.command, .shift]).disabled(!model.toolEnabled(.redo))
             }
             CommandGroup(after: .windowSize) {
                 Button(L10n.text("切换全屏")) { delegate.editorWindow?.toggleFullScreen(nil) }
                     .keyboardShortcut("f", modifiers: [.control, .command])
             }
+            CommandMenu(L10n.text("性能诊断")) {
+                Toggle(L10n.text("记录交互耗时"), isOn: Binding(get: { recordingTimings }, set: {
+                    recordingTimings = $0; InteractionMetrics.shared.setEnabled($0)
+                }))
+                Button(L10n.text("导出性能报告…"), action: PerformanceReport.export)
+                Button(L10n.text("清空性能记录")) { InteractionMetrics.shared.reset() }
+            }
             CommandMenu(L10n.text("图片")) {
                 Button(L10n.text("本地画笔…"),action:model.beginBrush).disabled(!model.canUseLayers)
                 Button(L10n.text("添加文字"), action: model.addText).disabled(!model.canUseLayers)
                 Button(L10n.text("添加图片贴纸…"), action: model.importSticker).disabled(!model.canUseLayers)
-                Button(L10n.text("向右旋转 90°")) { model.apply(.clockwise) }.keyboardShortcut("r").disabled(!model.canTransform)
-                Button(L10n.text("向左旋转 90°")) { model.apply(.counterclockwise) }.keyboardShortcut("r", modifiers: [.command, .shift]).disabled(!model.canTransform)
+                Button(L10n.text("向右旋转 90°")) { model.apply(.clockwise) }.keyboardShortcut("r").disabled(!model.canRotate)
+                Button(L10n.text("向左旋转 90°")) { model.apply(.counterclockwise) }.keyboardShortcut("r", modifiers: [.command, .shift]).disabled(!model.canRotate)
                 Button(L10n.text("水平镜像")) { model.apply(.mirrorHorizontal) }.disabled(!model.canTransform)
                 Button(L10n.text("垂直镜像")) { model.apply(.mirrorVertical) }.disabled(!model.canTransform)
                 Divider()
@@ -64,7 +73,7 @@ struct EasyPicApp: App {
                 Button(L10n.text("取消裁剪"), action: model.cancelCrop).keyboardShortcut(.escape, modifiers: []).disabled(!model.cropping || model.busy)
                 Button(L10n.text("退出画笔"), action: model.closeToolDetails).keyboardShortcut(.escape, modifiers: []).disabled(!model.brushMode || !model.canPerformEditorActions)
                 Button(L10n.text("适应窗口"), action: model.resetZoom).keyboardShortcut("0").disabled(model.image == nil)
-                Button(L10n.text("实际像素")) { model.actualSize = true; model.zoom = 1 }.keyboardShortcut("1").disabled(model.image == nil || model.cropping)
+                Button(L10n.text("实际像素")) { model.resetZoom(); model.actualSize = true }.keyboardShortcut("1").disabled(model.image == nil || model.cropping)
                 Divider()
                 Button(L10n.text("上一张")) { model.navigate(-1) }.keyboardShortcut(.leftArrow, modifiers: []).disabled(!model.canNavigatePrevious)
                 Button(L10n.text("下一张")) { model.navigate(1) }.keyboardShortcut(.rightArrow, modifiers: []).disabled(!model.canNavigateNext)
@@ -143,6 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var pendingURLs: [URL] = []
     private var editors: [ObjectIdentifier: Entry] = [:]
     private var allowTermination = false
+    private var legacyRedoMonitor: Any?
     private final class Entry {
         weak var window: NSWindow?
         weak var model: EditorModel?
@@ -172,11 +182,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
+        legacyRedoMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let handled = MainActor.assumeIsolated {
+                let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+                guard modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "y",
+                      let self, event.window === self.editorWindow, let model = self.model,
+                      model.toolEnabled(.redo) else { return false }
+                model.chooseEditorTool(.redo)
+                return true
+            }
+            return handled ? nil : event
+        }
         if let iconURL = Bundle.main.url(forResource: "EasyPicIcon", withExtension: "icns"), let icon = NSImage(contentsOf: iconURL) {
             NSApp.applicationIconImage = icon
         }
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+    }
+    func applicationWillTerminate(_ notification: Notification) {
+        if let legacyRedoMonitor { NSEvent.removeMonitor(legacyRedoMonitor) }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { showEditor?() }
@@ -245,6 +269,7 @@ struct WindowBridge: NSViewRepresentable {
             // Preserve SwiftUI's delegate: it owns the scene/window lifecycle.
             context.coordinator.original = window.delegate
             window.delegate = context.coordinator
+            context.coordinator.renderingActivity.attach(window, model: model)
         }
         return view
     }
@@ -253,6 +278,7 @@ struct WindowBridge: NSViewRepresentable {
 
 @MainActor
 final class WindowDelegateProxy: NSObject, NSWindowDelegate {
+    let renderingActivity = WindowRenderingActivity()
     let owner: AppDelegate
     var original: (any NSWindowDelegate)?
     init(owner: AppDelegate) { self.owner = owner }

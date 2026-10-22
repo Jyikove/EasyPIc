@@ -14,9 +14,25 @@ struct EditorView: View {
     @State private var dropTarget = false
     @State private var toolbarBottomSpacing: CGFloat = 0
     @State private var sidebarWidth: CGFloat = 0
+    @State private var titleWidth: CGFloat = 1180
+    @State private var navigationExpanded = false
     @StateObject private var sidebarLayout = SidebarWindowSizer(minimumWidth: SidebarWindowSizer.minimumViewerWidth)
-    private let windowInset: CGFloat = 12
+    private let windowInset = CanvasLayout.windowInset
     private let minimumWindowWidth = SidebarWindowSizer.minimumViewerWidth
+    private let toolbarButtonHeight: CGFloat = 22
+    private let toolbarControlInset: CGFloat = 3
+    // The actual capsule is hosted in the titlebar at the whole-window midpoint.
+    private let expandedToolbarWidth: CGFloat = 314
+    private var filenameWidth: CGFloat {
+        let stableWidth = sidebarLayout.viewportWidth ?? titleWidth
+        // Navigation now retracts in editing mode, so the filename only needs
+        // one normal button gap beside the collapsed, four-button center capsule.
+        return max(0, min(180, (stableWidth - 154) / 2 - 238))
+    }
+    private var navigationContentWidth: CGFloat {
+        108 + (model.fileURL != nil && filenameWidth > 0 ? filenameWidth + 28 : 0)
+    }
+
 
     var body: some View {
         let _ = languageSettings.language
@@ -31,7 +47,7 @@ struct EditorView: View {
                     if model.sidePanel == .thumbnails {
                         FolderPreviewPanel(model: model)
                             .transition(.opacity)
-                    } else if model.sidePanel == .text {
+                    } else if model.isRecognitionPanel {
                         TextRecognitionPanel(model: model)
                             .transition(.opacity)
                     } else if model.sidePanel == .edit {
@@ -41,7 +57,7 @@ struct EditorView: View {
                 }
                 .background {
                     GeometryReader { geometry in
-                        Color.clear.preference(key: SidebarWidthPreference.self, value: geometry.size.width)
+                        Color.clear.preference(key: SidebarWidthPreference.self, value: model.sidePanel == .edit ? 0 : geometry.size.width)
                     }
                 }
                 .fixedSize(horizontal: true, vertical: false)
@@ -53,6 +69,9 @@ struct EditorView: View {
             .animation(EasyPicMotion.panelAnimation(reduced: reduceMotion), value: model.sidePanel)
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+            if sidebarLayout.viewportWidth == nil { titleWidth = $0 }
+        }
         .disabled(showingDialog).allowsHitTesting(!showingDialog)
         .padding(.horizontal, windowInset)
         .padding(.bottom, windowInset)
@@ -62,19 +81,15 @@ struct EditorView: View {
             sidebarWidth = width > 0 ? width + 12 : 0
         }
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                navigationToolbar
+            }.sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .principal) {
-                HStack(spacing: 12) {
-                toolbarButton(L10n.text("上一张"), "chevron.left", disabled: !model.canNavigatePrevious) { model.navigate(-1) }
-                toolbarButton(L10n.text("下一张"), "chevron.right", disabled: !model.canNavigateNext) { model.navigate(1) }
-                toolbarButton(L10n.text("预览"), "square.grid.2x2", disabled: model.image == nil || !model.canSwitchPanel, selected: model.sidePanel == .thumbnails) { model.togglePanel(.thumbnails) }
-                toolbarButton(L10n.text("提取文本"), "text.viewfinder", disabled: model.image == nil || !model.canSwitchPanel, selected: model.sidePanel == .text) { model.togglePanel(.text) }
-                toolbarButton(L10n.text("逆时针旋转 90°"), "arrow.counterclockwise", disabled: !model.viewerControlsEnabled || !model.canTransform || model.brushMode) { model.apply(.counterclockwise) }
-                toolbarButton(L10n.text("编辑"), "pencil.tip", disabled: !model.canPerformEditorActions, selected: model.sidePanel == .edit) { model.toggleEditor() }
-                }
-                .padding(.horizontal, 4)
-                .padding(.vertical, 3)
-                .background(ToolbarSpacingReader { toolbarBottomSpacing = $0 })
+                // Keep the native titlebar height without allowing NSToolbar to
+                // choose the horizontal center of the visible controls.
+                Color.clear.frame(width: 1, height: toolbarButtonHeight + 2 * toolbarControlInset)
             }
+            .sharedBackgroundVisibility(.hidden)
         }
         .toolbar(removing: .title)
         .onAppear {
@@ -84,11 +99,18 @@ struct EditorView: View {
         .onChange(of: model.document) { _, _ in model.recognizeText() }
         .onChange(of: model.liveHistory.edits) { _, _ in model.recognizeText() }
         .onChange(of: model.fileURL) { _, _ in model.recognizeText() }
+        .onChange(of: model.sidePanel) { _, _ in navigationExpanded = false }
         .onChange(of: model.cropping) { _, cropping in if cropping { model.sidePanel = .edit } }
         .onChange(of: model.brushMode) { _, painting in if painting { model.sidePanel = .edit } }
         .glassWindowBackground()
         .background(WindowBridge(delegate: delegate, model: model))
         .background(SidebarWindowBridge(sizer: sidebarLayout, sidebarWidth: sidebarWidth))
+        .background(WindowCenteredToolbar(width: expandedToolbarWidth, height: toolbarButtonHeight + 2 * toolbarControlInset,
+                                          hitWidth: model.sidePanel == .edit ? expandedToolbarWidth : 154) {
+            centeredToolbar.environmentObject(languageSettings)
+                .disabled(showingDialog || model.exportSheet)
+                .preferredColorScheme(.dark).tint(accent)
+        })
         .preferredColorScheme(.dark)
         .tint(accent)
         .onDrop(of: [.fileURL], isTargeted: $dropTarget) { providers in
@@ -109,7 +131,7 @@ struct EditorView: View {
         }
     }
     private var showingDialog: Bool {
-        model.error != nil || model.pendingOriginalReplacement != nil || model.confirmingEditorExit
+        (model.error != nil && !model.exportSheet) || model.pendingOriginalReplacement != nil || model.confirmingEditorExit
     }
     private var dialogKind: String? {
         if model.error != nil { return "error" }
@@ -155,9 +177,93 @@ struct EditorView: View {
         }
     }
 
-    private func toolbarButton(_ title: String, _ icon: String, disabled: Bool, selected: Bool = false, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Label(title, systemImage: icon).frame(width: 28, height: 20).contentShape(Rectangle()) }
-            .buttonStyle(GlassButtonStyle(selected: selected, radius: 7, horizontalPadding: 0, verticalPadding: 0))
+    private var navigationButtons: some View {
+        HStack(spacing: 12) {
+            toolbarButton(L10n.text("上一张"), "chevron.left", disabled: !model.canNavigatePrevious) { model.navigate(-1) }
+            toolbarButton(L10n.text("下一张"), "chevron.right", disabled: !model.canNavigateNext) { model.navigate(1) }
+            toolbarButton(L10n.text("预览"), "square.grid.2x2", disabled: model.image == nil || !model.canSwitchPanel, selected: model.sidePanel == .thumbnails) { model.togglePanel(.thumbnails) }
+        }
+    }
+    private var navigationToolbar: some View {
+        let editing = model.sidePanel == .edit
+        return ZStack(alignment: .leading) {
+            if editing {
+                Button { navigationExpanded.toggle() } label: {
+                    Image(systemName: "ellipsis").font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.primary).frame(width: 22, height: 22).contentShape(Circle())
+                }
+                .buttonStyle(.plain).quickHelp(L10n.text("图片导航"))
+                .accessibilityLabel(L10n.text("图片导航"))
+                .disabled(showingDialog || model.exportSheet)
+                .popover(isPresented: $navigationExpanded, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
+                    navigationButtons.padding(8)
+                        .background(Capsule().fill(Color(red: 0.08, green: 0.20, blue: 0.34).opacity(0.8)))
+                        .glassPopover(radius: 20)
+                        .environmentObject(languageSettings)
+                }
+                .transition(.opacity)
+            } else {
+                HStack(spacing: 12) {
+                    navigationButtons
+                    if let name = model.fileURL?.lastPathComponent, filenameWidth > 0 {
+                        Text(name).font(.system(size: 11, weight: .medium)).foregroundStyle(.white)
+                            .lineLimit(1).truncationMode(.middle).frame(width: filenameWidth)
+                            .padding(.horizontal, 8).frame(height: toolbarButtonHeight)
+                            .background(Capsule().fill(EasyPicGlass.blue.opacity(0.8)))
+                            .quickHelp(name).accessibilityLabel(name)
+                    }
+                }.transition(.opacity)
+            }
+        }
+        .frame(width: editing ? 22 : navigationContentWidth, height: toolbarButtonHeight, alignment: .leading)
+        .clipped().padding(toolbarControlInset)
+        .glassSurface(.panel, radius: 14)
+        .animation(EasyPicMotion.panelAnimation(reduced: reduceMotion), value: editing)
+        // Keep AppKit's leading origin steady while the visible capsule retracts left.
+        .frame(width: navigationContentWidth + 6, alignment: .leading).fixedSize()
+    }
+
+    private var centeredToolbar: some View {
+        HStack(spacing: 12) {
+            toolbarButton(L10n.text("提取文本"), "text.viewfinder", disabled: model.image == nil || !model.canSwitchPanel, selected: model.sidePanel == .text) { model.togglePanel(.text) }
+            toolbarButton(L10n.text("二维码"), "qrcode.viewfinder", disabled: model.image == nil || !model.canSwitchPanel, selected: model.sidePanel == .qr) { model.togglePanel(.qr) }
+            toolbarButton(L10n.text("逆时针旋转 90°"), "arrow.counterclockwise", disabled: !model.viewerControlsEnabled || !model.canRotate || model.brushMode) { model.apply(.counterclockwise) }
+            editorToolbarGroup
+        }
+        .padding(toolbarControlInset).fixedSize()
+        .glassSurface(.panel, radius: toolbarButtonHeight / 2 + toolbarControlInset)
+        .background(ToolbarSpacingReader { toolbarBottomSpacing = $0 })
+        .animation(EasyPicMotion.panelAnimation(reduced: reduceMotion), value: model.sidePanel == .edit)
+        .frame(width: expandedToolbarWidth, height: toolbarButtonHeight + 2 * toolbarControlInset)
+    }
+
+    private var editorToolbarGroup: some View {
+        let editing = model.sidePanel == .edit
+        return HStack(spacing: 12) {
+            toolbarButton(L10n.text(editing ? "取消编辑" : "编辑"), editing ? "xmark" : "pencil.tip",
+                          disabled: !model.canPerformEditorActions, selected: editing, grouped: editing) { model.toggleEditor() }
+            if editing {
+                toolbarButton(L10n.text("撤销"), "arrow.uturn.backward", disabled: !model.toolEnabled(.undo), grouped: true) { model.chooseEditorTool(.undo) }
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+                toolbarButton(L10n.text("重做（取消撤销）"), "arrow.uturn.forward", disabled: !model.toolEnabled(.redo), grouped: true) { model.chooseEditorTool(.redo) }
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+                toolbarButton(L10n.text("保存并替换原图"), "square.and.arrow.down", disabled: !model.toolEnabled(.replaceOriginal), grouped: true) { model.chooseEditorTool(.replaceOriginal) }
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+                toolbarButton(L10n.text("另存为"), "arrow.down.to.line", disabled: !model.toolEnabled(.saveAs), grouped: true) { model.chooseEditorTool(.saveAs) }
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+            }
+        }
+        .background {
+            if editing {
+                Capsule().fill(Color(red: 0.08, green: 0.20, blue: 0.34).opacity(0.84))
+                    .overlay(Capsule().strokeBorder(EasyPicGlass.edge(.control, highlighted: true), lineWidth: 0.8))
+            }
+        }
+    }
+
+    private func toolbarButton(_ title: String, _ icon: String, disabled: Bool, selected: Bool = false, grouped: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) { Label(title, systemImage: icon).frame(width: 28, height: toolbarButtonHeight).contentShape(Rectangle()) }
+            .buttonStyle(ToolbarIconStyle(selected: selected, grouped: grouped, radius: toolbarButtonHeight / 2))
             .labelStyle(.iconOnly).quickHelp(title).accessibilityLabel(title)
             .foregroundStyle(selected ? accent : .primary)
             .disabled(disabled)
@@ -183,56 +289,135 @@ struct EditorView: View {
 
 }
 
+private struct ToolbarIconStyle: ButtonStyle {
+    let selected: Bool
+    let grouped: Bool
+    let radius: CGFloat
+    @Environment(\.isEnabled) private var enabled
+    @State private var hovered = false
+    @ViewBuilder func makeBody(configuration: Configuration) -> some View {
+        if grouped {
+            configuration.label
+                .foregroundStyle(.white.opacity(enabled ? 1 : 0.5))
+                .background(Capsule().fill(.white.opacity(configuration.isPressed ? 0.18 : (hovered ? 0.10 : 0))))
+                .contentShape(Capsule())
+                .onHover { hovered = $0 }
+        } else {
+            GlassButtonStyle(selected: selected, radius: radius, horizontalPadding: 0, verticalPadding: 0)
+                .makeBody(configuration: configuration)
+        }
+    }
+}
+
 struct ImageCanvas: View {
     @EnvironmentObject private var languageSettings: AppLanguageSettings
     @ObservedObject var model: EditorModel
     let image: CGImage
-    @State private var panOffset: CGSize = .zero
+    @StateObject private var frameClock = CanvasFrameClock()
+    @StateObject private var camera = CanvasCamera()
+    private var canvasZoom: Double {
+        get { camera.zoom }
+        nonmutating set { camera.update(zoom: newValue) }
+    }
+    private var panOffset: CGSize {
+        get { camera.pan }
+        nonmutating set { camera.update(pan: newValue) }
+    }
+    private var usesNativeViewport: Bool {
+        model.rotationTransition == nil && model.svgImage == nil && model.livePhoto == nil &&
+        model.mediaInfo?.animation == nil && model.sidePanel != .edit && !model.isRecognitionPanel
+    }
     @State private var panDragOrigin: CGSize?
+    private var allowsPanGesture: Bool {
+        !model.hasRecognitionSelection && (model.viewerControlsEnabled ||
+            (model.sidePanel == .edit && model.canPerformEditorActions &&
+             model.activeEditorTool == nil && !model.cropping && !model.brushMode && !model.textEditing))
+    }
 
     var body: some View {
         let _ = languageSettings.language
+        let _ = { camera.publishesChanges = !usesNativeViewport }()
         GeometryReader { geometry in
-            let available = CGSize(width: max(1, geometry.size.width - 56), height: max(1, geometry.size.height - 56))
+            let available = CGSize(width: max(1, geometry.size.width - 2 * CanvasLayout.imageInset),
+                                   height: max(1, geometry.size.height - 2 * CanvasLayout.imageInset))
             let fit = min(available.width / Double(image.width), available.height / Double(image.height))
             let base = model.actualSize ? 1 / (NSScreen.main?.backingScaleFactor ?? 2) : fit
-            let scale = base * model.zoom
+            let scale = base * canvasZoom
             let size = CGSize(width: Double(image.width) * scale, height: Double(image.height) * scale)
             ZStack {
+                if usesNativeViewport {
+                    NativeRasterViewport(image: model.documentPreview ?? image, camera: camera, actualSize: model.actualSize,
+                                         active: model.windowIsRendering, clock: frameClock)
+                } else {
                 ZStack(alignment: .topLeading) {
-                    checkerboard(size: size)
-                    if model.livePhoto != nil {
+                    if model.rotationTransition == nil { checkerboard(size: size) }
+                    if let rotation = model.rotationTransition {
+                        let rotatedFit = min(available.width / Double(image.height), available.height / Double(image.width))
+                        RotatingImageView(transition: rotation, size: size, finalScale: model.actualSize ? 1 : rotatedFit / fit)
+                            .frame(width: size.width, height: size.height).id(rotation.id)
+                    } else if let svgImage = model.svgImage {
+                        SVGImageView(image: svgImage, poster: image, sourceURL: model.fileURL,
+                                     viewport: CGRect(x: (size.width - geometry.size.width) / 2 - panOffset.width,
+                                                      y: (size.height - geometry.size.height) / 2 - panOffset.height,
+                                                      width: geometry.size.width, height: geometry.size.height), quarterTurns: model.svgQuarterTurns).frame(width: size.width, height: size.height)
+                    } else if model.livePhoto != nil {
                         LivePhotoFrameView(playback: model.livePlayback, poster: image).frame(width: size.width, height: size.height)
                     } else if model.mediaInfo?.animation != nil {
                         AnimatedFrameView(playback: model.playback, poster: image).frame(width: size.width, height: size.height)
+                    } else if model.sidePanel == .edit, let document = model.document, let background = model.baseImage {
+                        InteractiveDocumentView(document: document, draft: model.draftLayer, resources: model.resources,
+                                                base: background, service: model.renderService, scale: scale, size: size,
+                                                viewport: CGRect(x: (size.width - geometry.size.width) / 2 - panOffset.width,
+                                                                 y: (size.height - geometry.size.height) / 2 - panOffset.height,
+                                                                 width: geometry.size.width, height: geometry.size.height), spatialIndex: model.sceneIndex)
                     } else {
-                        Image(decorative: model.documentPreview ?? image, scale: 1).resizable().interpolation(.high).frame(width: size.width, height: size.height)
+                        NativeRasterImage(image: model.documentPreview ?? image).frame(width: size.width, height: size.height)
                     }
-                    if model.cropping { CropOverlay(model: model, size: size, scale: scale) }
+                    if model.rotationTransition != nil { Color.clear.allowsHitTesting(false) }
+                    else if model.cropping { CropOverlay(model: model, size: size, scale: scale) }
                     else if model.brushMode { BrushOverlay(model:model,scale:scale,size:size) }
                     else if model.sidePanel == .edit && (model.activeEditorTool == .sticker || model.activeEditorTool == .text) && model.livePhoto == nil && !model.isReadOnly { LayerCanvasOverlay(model: model, scale: scale, size: size) }
+                    if model.isRecognitionPanel { RecognitionOverlay(model: model, size: size) }
                 }
                 .frame(width: size.width, height: size.height)
                 .offset(panOffset)
-                .shadow(color: .black.opacity(0.3), radius: 22, y: 10)
                 .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 2)
                     .onChanged { value in
-                        guard model.viewerControlsEnabled else { return }
+                        guard allowsPanGesture else { return }
                         let origin = panDragOrigin ?? panOffset
                         panDragOrigin = origin
-                        panOffset = CGSize(width: origin.width + value.translation.width,
-                                           height: origin.height + value.translation.height)
+                        frameClock.submit("CanvasDrag", at: ProcessInfo.processInfo.systemUptime - max(0, Date().timeIntervalSince(value.time))) {
+                            panOffset = CGSize(width: origin.width + value.translation.width,
+                                               height: origin.height + value.translation.height)
+                        }
                     }
-                    .onEnded { _ in panDragOrigin = nil },
-                including: model.viewerControlsEnabled ? .all : .none
+                    .onEnded { _ in frameClock.flush("CanvasDrag"); panDragOrigin = nil },
+                including: allowsPanGesture ? .all : .subviews
             )
-            .background(CanvasInputBridge { event, point in
-                guard !model.cropping else { return }
+            .environmentObject(frameClock)
+            .background(FramePresentationProbe(clock: frameClock, trace: model.visualTraceID))
+            .background(CanvasInputBridge(
+                frameClock: frameClock,
+                spacePanEnabled: model.sidePanel == .edit && model.canPerformEditorActions,
+                shouldBeginPan: { point in
+                    let origin = CGPoint(x: (geometry.size.width - size.width) / 2 + panOffset.width,
+                                         y: (geometry.size.height - size.height) / 2 + panOffset.height)
+                    let imagePoint = CGPoint(x: (point.x - origin.x) / scale, y: (point.y - origin.y) / scale)
+                    return model.canPanBehindLayers(at: imagePoint, scale: scale)
+                },
+                pan: { delta in
+                    guard model.canPerformEditorActions else { return }
+                    panOffset.width += delta.width
+                    panOffset.height += delta.height
+                }
+            ) { event, point in
+                guard !model.cropping, !model.hasRecognitionSelection else { return }
                 let zoomFactor: Double
                 if event.type == .scrollWheel {
                     // Keep wheel-down zooming in, regardless of Natural Scrolling.
@@ -242,32 +427,39 @@ struct ImageCanvas: View {
                 } else {
                     zoomFactor = 1 + Double(event.magnification)
                 }
-                let next = min(8, max(0.1, model.zoom * zoomFactor))
-                let ratio = next / model.zoom
-                panOffset = CGSize(width: (panOffset.width + geometry.size.width / 2 - point.x) * ratio + point.x - geometry.size.width / 2,
-                                   height: (panOffset.height + geometry.size.height / 2 - point.y) * ratio + point.y - geometry.size.height / 2)
-                model.zoom = next
+                let next = min(8, max(0.1, canvasZoom * zoomFactor))
+                let ratio = next / canvasZoom
+                camera.update(zoom: next, pan: CGSize(width: (panOffset.width + geometry.size.width / 2 - point.x) * ratio + point.x - geometry.size.width / 2,
+                                   height: (panOffset.height + geometry.size.height / 2 - point.y) * ratio + point.y - geometry.size.height / 2))
             })
             .clipped()
-            .onAppear { model.brushCanvasScale = scale }
-            .onChange(of: scale) { _, scale in model.brushCanvasScale = scale }
-            .onChange(of: model.fileURL) { _, _ in panOffset = .zero; panDragOrigin = nil }
-            .onChange(of: model.viewportReset) { _, _ in panOffset = .zero; panDragOrigin = nil }
-            .onChange(of: model.viewerControlsEnabled) { _, enabled in if !enabled { panDragOrigin = nil } }
+            .onAppear { frameClock.setRenderingActive(model.windowIsRendering); canvasZoom = model.zoom; if model.brushMode { model.brushCanvasScale = scale } }
+            .onChange(of: model.windowIsRendering) { _, active in frameClock.setRenderingActive(active) }
+            .environment(\.canvasRenderingActive, model.windowIsRendering)
+            .onChange(of: model.zoom) { _, zoom in canvasZoom = zoom }
+            .onChange(of: model.actualSize) { _, _ in canvasZoom = model.zoom }
+            .onChange(of: scale) { _, scale in if model.brushMode { model.brushCanvasScale = scale } }
+            .onChange(of: model.brushMode) { _, enabled in if enabled { model.brushCanvasScale = scale } }
+            .onChange(of: model.fileURL) { _, _ in canvasZoom = model.zoom; panOffset = .zero; panDragOrigin = nil }
+            .onChange(of: model.viewportReset) { _, _ in canvasZoom = model.zoom; panOffset = .zero; panDragOrigin = nil }
+            .onChange(of: allowsPanGesture) { _, enabled in if !enabled { panDragOrigin = nil } }
         }
     }
 
     private func checkerboard(size: CGSize) -> some View {
-        Canvas { context, area in
-            context.fill(Path(CGRect(origin: .zero, size: area)), with: .color(Color(white: 0.20)))
-            let tile = 12.0
-            for y in stride(from: 0.0, to: area.height, by: tile) {
-                for x in stride(from: 0.0, to: area.width, by: tile) where (Int(x / tile) + Int(y / tile)) % 2 == 0 {
-                    context.fill(Path(CGRect(x: x, y: y, width: tile, height: tile)), with: .color(Color(white: 0.25)))
-                }
-            }
-        }.frame(width: size.width, height: size.height)
+        Rectangle().fill(ImagePaint(image: Self.checkerTile, scale: 1))
+            .frame(width: size.width, height: size.height)
     }
+    private static let checkerTile: Image = {
+        let context = CGContext(data: nil, width: 24, height: 24, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(CGColor(gray: 0.20, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: 24, height: 24))
+        context.setFillColor(CGColor(gray: 0.25, alpha: 1))
+        context.fill([CGRect(x: 0, y: 0, width: 12, height: 12), CGRect(x: 12, y: 12, width: 12, height: 12)])
+        return Image(decorative: context.makeImage()!, scale: 1)
+    }()
+
 
 }
 
@@ -278,40 +470,6 @@ struct AnimatedFrameView: View {
     var body: some View {
         let _ = languageSettings.language
         Image(decorative: playback.frame ?? poster, scale: 1).resizable().interpolation(.high)
-    }
-}
-
-struct ExportView: View {
-    @EnvironmentObject private var languageSettings: AppLanguageSettings
-    @ObservedObject var model: EditorModel
-    var body: some View {
-        let _ = languageSettings.language
-        VStack(alignment: .leading, spacing: 24) {
-            HStack { Image(systemName: "square.and.arrow.down.on.square").foregroundStyle(accent); Text(L10n.text("另存为")).font(.title2.weight(.medium)) }
-            Text(L10n.text("按当前图片的完整像素尺寸导出。缩放比例不影响导出质量。")).font(.system(size: 12)).foregroundStyle(.secondary)
-            HStack { Text(L10n.text("格式")); Spacer(); GlassSegmentedPicker(selection: $model.exportFormat, options: [("PNG", .png), ("JPG", .jpg)]).frame(width: 190).accessibilityLabel(L10n.text("格式")) }
-            HStack { Text(L10n.text("尺寸")); Spacer(); Text(model.dimensions + " px").monospaced() }
-            if model.exportFormat == .jpg {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack { Text(L10n.text("质量")); Spacer(); Text("\(Int(model.jpegQuality * 100))%").monospaced() }
-                    GlassSlider(value: $model.jpegQuality, in: 0.1...1)
-                    Text(L10n.text("透明区域会填充白色背景。")).font(.caption).foregroundStyle(.secondary)
-                }
-            } else { Text(L10n.text("无损导出，保留透明区域。")).font(.caption).foregroundStyle(.secondary) }
-            HStack {
-                Button(L10n.text("取消"), action: model.cancelExport).keyboardShortcut(.cancelAction).buttonStyle(GlassButtonStyle())
-                Spacer()
-                if model.busy { ProgressView().controlSize(.small) }
-                Button(L10n.text("选择保存位置…"), action: model.export).keyboardShortcut(.defaultAction).buttonStyle(GlassButtonStyle(prominent: true))
-            }
-        }
-        .font(.system(size: 13))
-        .padding(30).frame(width: 400)
-        .glassSurface(.floating, radius: 24).glassWindowBackground().presentationBackground(.clear)
-        .glassEntrance()
-        .preferredColorScheme(.dark).tint(accent)
-        .disabled(model.busy || model.choosingExportLocation)
-        .interactiveDismissDisabled()
     }
 }
 
@@ -347,8 +505,10 @@ struct LivePhotoFrameView: View {
     let poster: CGImage
     var body: some View {
         let _ = languageSettings.language
-        Image(decorative: playback.showingMotion ? (playback.frame ?? poster) : poster, scale: 1)
-            .resizable().interpolation(.high)
+        Group {
+            if playback.showingMotion { NativeLivePhotoView(player: playback.player) }
+            else { Image(decorative: poster, scale: 1).resizable().interpolation(.high) }
+        }
     }
 }
 

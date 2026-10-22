@@ -7,6 +7,7 @@ public struct StickerLayer: Codable, Equatable, Identifiable {
     public var resourceID: UUID
     public var strokes: [BrushStroke]? = nil
     public var text: TextLayer? = nil
+    public var svgData: Data? = nil
     public var name: String
     public var center: CGPoint
     public var size: CGSize
@@ -18,6 +19,11 @@ public struct StickerLayer: Codable, Equatable, Identifiable {
     public var clips: [[CGPoint]] = []
     public init(resourceID: UUID, name: String, center: CGPoint, size: CGSize) {
         self.resourceID = resourceID; self.name = name; self.center = center; self.size = size
+    }
+    public var rasterKey: String {
+        if let text { return "\(size.width):\(size.height):" + RenderCache.key(text) }
+        if svgData != nil { return "svg:\(resourceID):\(size.width):\(size.height):" + RenderCache.key(strokes ?? []) }
+        return RenderCache.key(strokes ?? [])
     }
     public func contains(_ point: CGPoint) -> Bool {
         for polygon in clips {
@@ -39,6 +45,10 @@ public struct EditorDocument: Codable, Equatable {
     public var layers: [StickerLayer] = []
     public var activeLayerID: UUID?
     public init(baseResourceID: UUID, size: CGSize) { self.baseResourceID = baseResourceID; originalSize = size }
+    public var contentKey: String { RenderCache.key(self) }
+    public var referencedResourceIDs: Set<UUID> {
+        Set([baseResourceID] + layers.filter { $0.text == nil }.map(\.resourceID))
+    }
     public var size: CGSize {
         operations.reduce(originalSize) { size, op in
             switch op { case .clockwise, .counterclockwise: return CGSize(width: size.height, height: size.width)
@@ -84,6 +94,12 @@ public struct DocumentHistory {
     private var past: [EditorDocument] = []
     private var future: [EditorDocument] = []
     public init(_ document: EditorDocument) { self.document = document }
+    public var referencedResourceIDs: Set<UUID> {
+        var ids = document.referencedResourceIDs
+        for snapshot in past { ids.formUnion(snapshot.referencedResourceIDs) }
+        for snapshot in future { ids.formUnion(snapshot.referencedResourceIDs) }
+        return ids
+    }
     public var canUndo: Bool { !past.isEmpty }
     public var canRedo: Bool { !future.isEmpty }
     public mutating func apply(_ next: EditorDocument) {
@@ -96,11 +112,55 @@ public struct DocumentHistory {
 public enum DocumentEngine {
     public static func renderBase(_ document: EditorDocument, resources: [UUID: CGImage]) throws -> CGImage {
         guard var image = resources[document.baseResourceID] else { throw ImageFailure.unreadable }
-        for stroke in document.baseStrokes ?? [] { image = try BrushEngine.apply(stroke, to: image) }
+        image = try stroked(image, strokes: document.baseStrokes ?? [])
         return try ImageEngine.render(image, operations: document.operations)
     }
+    private static func stroked(_ image: CGImage, strokes: [BrushStroke]) throws -> CGImage {
+        guard !strokes.isEmpty else { return image }
+        var result = image
+        var prefix: [BrushStroke] = []
+        for stroke in strokes {
+            try Task.checkCancellation()
+            prefix.append(stroke)
+            let key = "strokes:\(ObjectIdentifier(image)):\(RenderCache.key(prefix))"
+            let previous = result
+            result = try RenderCache.shared.image(key: key, source: image) { try BrushEngine.apply(stroke, to: previous) }
+        }
+        return result
+    }
+
+    public static func layerBitmap(_ layer: StickerLayer, resources: [UUID: CGImage], maxTextDimension: CGFloat? = nil) throws -> CGImage {
+        if let text = layer.text {
+            guard text.isValid else { throw ImageFailure.renderFailed }
+            let scale = maxTextDimension.map { min(1, $0 / max(layer.size.width, layer.size.height)) } ?? 1
+            let width = max(1, Int(ceil(layer.size.width * scale))), height = max(1, Int(ceil(layer.size.height * scale)))
+            let key = "text:\(width):\(height):" + layer.rasterKey
+            return try RenderCache.shared.image(key: key) {
+                guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                              bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw ImageFailure.renderFailed }
+                context.translateBy(x: CGFloat(width) / 2, y: CGFloat(height) / 2)
+                context.scaleBy(x: CGFloat(width) / layer.size.width, y: -CGFloat(height) / layer.size.height)
+                TextRenderer.draw(text, size: layer.size, in: context)
+                guard let image = context.makeImage() else { throw ImageFailure.renderFailed }
+                return image
+            }
+        }
+        if let data = layer.svgData, layer.strokes?.isEmpty != false {
+            let limit = maxTextDimension ?? max(layer.size.width, layer.size.height)
+            let scale = min(1, limit / max(layer.size.width, layer.size.height))
+            return try RenderCache.shared.image(key: "vector:" + layer.rasterKey + ":\(scale)") {
+                try SVGImageRenderer.renderRegion(data: data, region: CGRect(x: 0, y: 0, width: 1, height: 1),
+                                                  pixelSize: CGSize(width: layer.size.width * scale, height: layer.size.height * scale))
+            }
+        }
+        guard let image = resources[layer.resourceID] else { throw ImageFailure.unreadable }
+        return try stroked(image, strokes: layer.strokes ?? [])
+    }
     public static func render(_ document: EditorDocument, resources: [UUID: CGImage], base: CGImage? = nil, maxDimension: CGFloat? = nil) throws -> CGImage {
+        try Task.checkCancellation()
         let background = try base ?? renderBase(document, resources: resources)
+        if document.layers.allSatisfy({ !$0.visible }), maxDimension == nil { return background }
         let size = document.size
         let scale = maxDimension.map { min(1, $0 / max(size.width, size.height)) } ?? 1
         let width = max(1, Int((size.width * scale).rounded())), height = max(1, Int((size.height * scale).rounded()))
@@ -112,7 +172,16 @@ public enum DocumentEngine {
             context.draw(image, in: CGRect(origin: .zero, size: rect.size)); context.restoreGState()
         }
         draw(background, rect: CGRect(origin: .zero, size: size))
-        for layer in document.layers where layer.visible {
+        try drawLayers(document.layers, resources: resources, in: context)
+        guard let result = context.makeImage() else { throw ImageFailure.renderFailed }; return result
+    }
+    static func drawLayers(_ layers: [StickerLayer], resources: [UUID: CGImage], in context: CGContext) throws {
+        func draw(_ image: CGImage, rect: CGRect) {
+            context.saveGState(); context.translateBy(x: rect.minX, y: rect.maxY); context.scaleBy(x: 1, y: -1)
+            context.draw(image, in: CGRect(origin: .zero, size: rect.size)); context.restoreGState()
+        }
+        for layer in layers where layer.visible {
+            try Task.checkCancellation()
             context.saveGState()
             for polygon in layer.clips {
                 context.beginPath(); context.addLines(between: polygon); context.closePath(); context.clip()
@@ -121,15 +190,30 @@ public enum DocumentEngine {
             context.translateBy(x: layer.center.x, y: layer.center.y); context.rotate(by: layer.angle * .pi / 180)
             if layer.mirrored { context.scaleBy(x: -1, y: 1) }
             if let text = layer.text { TextRenderer.draw(text, size: layer.size, in: context) }
-            else {
-                guard let image = resources[layer.resourceID] else { throw ImageFailure.unreadable }
-                var edited = image
-                for stroke in layer.strokes ?? [] { edited = try BrushEngine.apply(stroke, to: edited) }
+            else if let svg = layer.svgData, layer.strokes?.isEmpty != false {
+                context.translateBy(x: -layer.size.width / 2, y: layer.size.height / 2); context.scaleBy(x: 1, y: -1)
+                context.setAlpha(1)
+                try SVGImageRenderer.draw(data: svg, in: CGRect(origin: .zero, size: layer.size), context: context, opacity: layer.opacity)
+            } else {
+                let edited = try layerBitmap(layer, resources: resources)
                 draw(edited, rect: CGRect(x: -layer.size.width / 2, y: -layer.size.height / 2, width: layer.size.width, height: layer.size.height))
             }
             context.restoreGState()
         }
-        guard let result = context.makeImage() else { throw ImageFailure.renderFailed }; return result
+    }
+    /// Draw directly into a canvas-space region; never render a whole frame and then crop it.
+    static func renderRegion(_ document: EditorDocument, resources: [UUID: CGImage], base: CGImage,
+                             region: CGRect, candidates: [Int]) throws -> CGImage {
+        guard let context = CGContext(data: nil, width: Int(region.width), height: Int(region.height), bitsPerComponent: 8,
+                                      bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw ImageFailure.renderFailed }
+        context.translateBy(x: 0, y: region.height); context.scaleBy(x: 1, y: -1)
+        context.translateBy(x: -region.minX, y: -region.minY)
+        context.saveGState(); context.translateBy(x: 0, y: document.size.height); context.scaleBy(x: 1, y: -1)
+        context.draw(base, in: CGRect(origin: .zero, size: document.size)); context.restoreGState()
+        try drawLayers(candidates.map { document.layers[$0] }, resources: resources, in: context)
+        guard let image = context.makeImage() else { throw ImageFailure.renderFailed }
+        return image
     }
     public static func save(_ document: EditorDocument, resources: [UUID: CGImage], to url: URL) throws {
         try validate(document)
@@ -140,7 +224,7 @@ public enum DocumentEngine {
         let ids = Set([document.baseResourceID] + document.layers.filter { $0.text == nil }.map(\.resourceID))
         for id in ids {
             guard let image = resources[id] else { throw ImageFailure.unreadable }
-            try ImageEngine.encode(image, format: .png).write(to: staging.appendingPathComponent(id.uuidString + ".png"), options: .atomic)
+            try ProjectResourceCache.shared.png(image, id: id).write(to: staging.appendingPathComponent(id.uuidString + ".png"), options: .atomic)
         }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(document).write(to: staging.appendingPathComponent("document.json"), options: .atomic)

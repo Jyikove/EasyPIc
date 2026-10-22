@@ -39,7 +39,7 @@ public final class LivePhotoPlayback: ObservableObject {
         let item = AVPlayerItem(url: live.videoURL)
         item.videoComposition = composition
         let videoOutput = AVPlayerItemVideoOutput(pixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
-        videoOutput.suppressesPlayerRendering = true
+        videoOutput.suppressesPlayerRendering = false
         item.add(videoOutput); output = videoOutput
         player.replaceCurrentItem(with: item)
         ended = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
@@ -97,6 +97,7 @@ public final class LivePhotoPlayback: ObservableObject {
         guard let output, let item = player.currentItem, let live else { return }
         let token = UUID(); generation = token
         frameTask = Task { [weak self] in
+            let started = ProcessInfo.processInfo.systemUptime
             while !Task.isCancelled {
                 guard let self, self.generation == token, self.player.currentItem === item else { return }
                 if item.status == .failed {
@@ -106,12 +107,21 @@ public final class LivePhotoPlayback: ObservableObject {
                 let time = self.player.currentTime()
                 if self.isPlaying, time.seconds.isFinite { self.position = min(live.lastFrameTime, max(0, time.seconds)) }
                 do {
-                    if output.hasNewPixelBuffer(forItemTime: time), let pixel = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) {
+                    // Native AVPlayerLayer owns continuous playback. Extract a bitmap
+                    // only for the initial frame and an explicitly paused cover seek.
+                    var displayedTime = CMTime.invalid
+                    if (!self.isPlaying || self.frame == nil), output.hasNewPixelBuffer(forItemTime: time), let pixel = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: &displayedTime) {
+                        if !self.isPlaying, displayedTime.isValid,
+                           abs(displayedTime.seconds - time.seconds) > 1.5 / live.frameRate {
+                            try await Task.sleep(for: .milliseconds(16)); continue
+                        }
                         let image = try await self.renderer.render(pixel)
                         guard self.generation == token, !Task.isCancelled else { return }
                         self.frame = image
+                        if !self.isPlaying { return }
                     }
-                    try await Task.sleep(for: .milliseconds(16))
+                    if !self.isPlaying, ProcessInfo.processInfo.systemUptime - started > 1 { return }
+                    try await Task.sleep(for: .milliseconds(self.isPlaying ? 33 : 16))
                 } catch is CancellationError { return }
                 catch { self.error = error.localizedDescription; self.pause(); return }
             }

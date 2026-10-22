@@ -25,7 +25,12 @@ public struct ImageMediaInfo: Sendable {
     public let frameCount: Int
     public let animation: AnimationMetadata?
     public let isGIF: Bool
-    public var isReadOnly: Bool { isGIF || animation != nil }
+    public let isSVG: Bool
+    public var isReadOnly: Bool { isGIF || isSVG || animation != nil }
+
+    public init(frameCount: Int, animation: AnimationMetadata?, isGIF: Bool, isSVG: Bool = false) {
+        self.frameCount = frameCount; self.animation = animation; self.isGIF = isGIF; self.isSVG = isSVG
+    }
 
     static func read(from source: CGImageSource) -> ImageMediaInfo {
         let count = CGImageSourceGetCount(source)
@@ -90,8 +95,14 @@ public struct AnimationTimeline: Sendable {
 private actor AnimationFrameDecoder {
     private let url: URL
     private var source: CGImageSource?
+    private final class FrameBox { let image: CGImage; init(_ image: CGImage) { self.image = image } }
+    private let cache: NSCache<NSNumber, FrameBox> = {
+        let cache = NSCache<NSNumber, FrameBox>(); cache.totalCostLimit = 12 * 1024 * 1024; cache.countLimit = 6; return cache
+    }()
     init(url: URL) { self.url = url }
     func frame(at index: Int) throws -> CGImage {
+        try Task.checkCancellation()
+        if let box = cache.object(forKey: NSNumber(value: index)) { return box.image }
         if source == nil {
             // ImageIO composes GIF/APNG/WebP partial frames and disposal internally.
             source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
@@ -99,6 +110,9 @@ private actor AnimationFrameDecoder {
         guard let source,
               let image = CGImageSourceCreateImageAtIndex(source, index,
                 [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { throw ImageFailure.unreadable }
+        try Task.checkCancellation()
+        let cost = image.bytesPerRow * image.height
+        if cost <= 12 * 1024 * 1024 { cache.setObject(FrameBox(image), forKey: NSNumber(value: index), cost: cost) }
         return image
     }
 }
@@ -146,8 +160,8 @@ public final class ImagePlayback: ObservableObject {
                     let image = try await decoder.frame(at: index)
                     // Old-file decodes must not replace a new file, or advance a paused frame.
                     guard let self, self.generation == token, !Task.isCancelled else { return }
-                    self.frame = image
-                    self.frameIndex = index
+                    if self.frame !== image { self.frame = image }
+                    if self.frameIndex != index { self.frameIndex = index }
                     let now = ProcessInfo.processInfo.systemUptime - started
                     let delay = max(0.001, timeline.timeUntilNextFrame(at: now))
                     try await Task.sleep(for: .seconds(delay))

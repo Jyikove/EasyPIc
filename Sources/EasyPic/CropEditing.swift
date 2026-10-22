@@ -146,17 +146,37 @@ extension EditorModel {
 }
 
 struct CropOverlay: View {
-    @EnvironmentObject private var languageSettings: AppLanguageSettings
     @ObservedObject var model: EditorModel
     let size: CGSize
     let scale: CGFloat
+    var body: some View {
+        ImageSelectionOverlay(rect: $model.cropRect, imageSize: model.cropImageSize, size: size, scale: scale,
+                              ratio: model.cropAspectRatio, enabled: model.cropping && !model.busy,
+                              resetID: model.cropRatio.rawValue, label: L10n.text("裁剪九宫格选框"))
+    }
+}
+
+/// Crop and OCR share the same grid, dimming, handles and bounded selection geometry.
+struct ImageSelectionOverlay: View {
+    @EnvironmentObject private var frameClock: CanvasFrameClock
+    @Binding var rect: CGRect?
+    let imageSize: CGSize
+    let size: CGSize
+    let scale: CGFloat
+    var ratio: CGFloat? = nil
+    var enabled = true
+    var showsGrid = true
+    var resetID = ""
+    var label: String
+    var finished: () -> Void = {}
+    var tapped: (CGPoint) -> Void = { _ in }
     @State private var dragRect: CGRect?
     @State private var dragHandle: CropHandle?
+    private var batchKey: String { "Selection-" + label }
     var body: some View {
-        let _ = languageSettings.language
         Canvas { context, area in
             var mask = Path(CGRect(origin: .zero, size: area))
-            if let rect = model.cropRect {
+            if let rect {
                 let r = CGRect(x: rect.minX * scale, y: rect.minY * scale, width: rect.width * scale, height: rect.height * scale)
                 mask.addRect(r)
                 context.fill(mask, with: .color(.black.opacity(0.5)), style: FillStyle(eoFill: true))
@@ -168,7 +188,7 @@ struct CropOverlay: View {
                     grid.move(to: CGPoint(x: r.minX, y: r.minY + r.height * fraction))
                     grid.addLine(to: CGPoint(x: r.maxX, y: r.minY + r.height * fraction))
                 }
-                context.stroke(grid, with: .color(.white.opacity(0.85)), lineWidth: 1)
+                if showsGrid { context.stroke(grid, with: .color(.white.opacity(0.85)), lineWidth: 1) }
                 var handles = Path()
                 let length = min(14, min(r.width, r.height) / 4)
                 for (x, y, sx, sy) in [(r.minX, r.minY, 1.0, 1.0), (r.maxX, r.minY, -1.0, 1.0),
@@ -189,24 +209,39 @@ struct CropOverlay: View {
             } else { context.fill(mask, with: .color(.black.opacity(0.5))) }
         }
         .frame(width: size.width, height: size.height).contentShape(Rectangle())
-        .accessibilityLabel(L10n.text("裁剪九宫格选框"))
+        .accessibilityLabel(label)
         .gesture(DragGesture(minimumDistance: 0).onChanged { value in
-            guard model.cropping, !model.busy, let rect = model.cropRect else { return }
+            guard enabled, let rect else { return }
             if dragRect == nil {
                 let point = CGPoint(x: value.startLocation.x / scale, y: value.startLocation.y / scale)
                 guard let handle = CropGeometry.handle(at: point, rect: rect, tolerance: 10 / scale) else { return }
                 dragRect = rect; dragHandle = handle
             }
             if let dragRect, let dragHandle {
-                model.adjustCrop(from: dragRect, handle: dragHandle,
-                                 delta: CGSize(width: value.translation.width / scale, height: value.translation.height / scale))
+                frameClock.submit(batchKey) {
+                    self.rect = CropGeometry.adjust(dragRect, handle: dragHandle,
+                                               delta: CGSize(width: value.translation.width / scale, height: value.translation.height / scale),
+                                               in: imageSize, ratio: ratio)
+                }
             }
-        }.onEnded { _ in dragRect = nil; dragHandle = nil })
-        .onChange(of: model.cropRatio) { _, _ in dragRect = nil; dragHandle = nil }
+        }.onEnded { value in
+            frameClock.flush(batchKey)
+            let changed = dragRect != nil && rect != dragRect
+            dragRect = nil; dragHandle = nil
+            if changed { finished() }
+            else if hypot(value.translation.width, value.translation.height) < 3 {
+                tapped(CGPoint(x: value.location.x / scale, y: value.location.y / scale))
+            }
+        })
+        .onChange(of: resetID) { _, _ in frameClock.cancel(batchKey); dragRect = nil; dragHandle = nil }
+        .onChange(of: enabled) { _, active in
+            if !active { frameClock.cancel(batchKey); dragRect = nil; dragHandle = nil }
+        }
+        .onChange(of: imageSize) { _, _ in frameClock.cancel(batchKey); dragRect = nil; dragHandle = nil }
         .onContinuousHover { phase in
             switch phase {
             case .active(let point):
-                guard let rect = model.cropRect else { return }
+                guard let rect else { return }
                 let p = CGPoint(x: point.x / scale, y: point.y / scale)
                 switch CropGeometry.handle(at: p, rect: rect, tolerance: 10 / scale) {
                 case .move: NSCursor.openHand.set()
@@ -218,6 +253,6 @@ struct CropOverlay: View {
             case .ended: NSCursor.arrow.set()
             }
         }
-        .onDisappear { NSCursor.arrow.set() }
+        .onDisappear { frameClock.cancel(batchKey); NSCursor.arrow.set() }
     }
 }

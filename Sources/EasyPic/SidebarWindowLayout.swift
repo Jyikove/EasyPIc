@@ -58,7 +58,7 @@ final class SidebarAttachmentView: NSView {
     private var appActive = true
     private var observers: [NSObjectProtocol] = []
 
-    init(minimumWidth: CGFloat, horizontalInset: CGFloat = 24) {
+    init(minimumWidth: CGFloat, horizontalInset: CGFloat = CanvasLayout.windowInset * 2) {
         self.minimumWidth = minimumWidth; self.horizontalInset = horizontalInset
     }
     deinit { resizeDisplayLink?.invalidate(); observers.forEach(NotificationCenter.default.removeObserver) }

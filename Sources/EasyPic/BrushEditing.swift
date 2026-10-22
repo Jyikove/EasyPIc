@@ -11,11 +11,22 @@ extension EditorModel {
         brushMode = true; brushPoints = []; cloneSource = nil
     }
     func cancelBrush() { brushMode = false; brushPoints = []; cloneSource = nil }
+    func makeBrushStroke(_ points: [CGPoint]) -> BrushStroke {
+        let rect = (brushTool != .solid || brushShape == .freehand) && brushRectangle && !points.isEmpty ? CGRect(x: min(points[0].x, points.last!.x), y: min(points[0].y, points.last!.y), width: abs(points[0].x - points.last!.x), height: abs(points[0].y - points.last!.y)) : nil
+        return BrushStroke(tool: brushTool, points: points, diameter: brushSize, hardness: brushHardness, opacity: brushOpacity,
+                           strength: brushStrength, color: brushColor, source: cloneSource, rectangle: rect,
+                           shape: brushTool == .solid ? brushShape : nil,
+                           cornerRadius: brushTool == .solid ? brushCornerRadius : nil,
+                           constrainCircle: brushTool == .solid ? brushCircle : nil)
+    }
     func commitBrush(_ points: [CGPoint]) {
         guard brushMode, !busy, let doc = document, !points.isEmpty else { return }
         if brushTool == .clone && cloneSource == nil { cloneSource = points[0]; status = L10n.text("已设置克隆取样点，拖动开始绘制"); return }
-        let rect = brushRectangle ? CGRect(x: min(points[0].x, points.last!.x), y: min(points[0].y, points.last!.y), width: abs(points[0].x - points.last!.x), height: abs(points[0].y - points.last!.y)) : nil
-        let stroke = BrushStroke(tool: brushTool, points: points, diameter: brushSize, hardness: brushHardness, opacity: brushOpacity, strength: brushStrength, color: brushColor, source: cloneSource, rectangle: rect)
+        let stroke = makeBrushStroke(points)
+        if brushTool == .solid && brushShape != .freehand && BrushShapeGeometry.path(for: stroke) == nil { return }
+        let trace = InteractionMetrics.shared.begin("BrushCommit", parent: latestInteractionID)
+        InteractionMetrics.shared.mark(trace, "BrushProcessingBegin")
+        let committedPreview = documentPreview
         let assets = resources, target = brushTool == .solid ? "overlay" : brushTarget, selected = selectedLayerID
         busy = true
         Task {
@@ -47,19 +58,20 @@ extension EditorModel {
                         return (next,nil,nil)
                     }
                     if target == "overlay" {
-                        guard let clear = CGContext(data:nil,width:Int(doc.size.width),height:Int(doc.size.height),bitsPerComponent:8,bytesPerRow:0,space:CGColorSpace(name:CGColorSpace.sRGB)!,bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue)?.makeImage() else { throw ImageFailure.renderFailed }
-                        let clearID = UUID(); next.baseResourceID = doc.baseResourceID
-                        next.layers.append(StickerLayer(resourceID: clearID, name: L10n.text("纯色画笔"), center: CGPoint(x: doc.size.width / 2, y: doc.size.height / 2), size: doc.size))
-                        next.layers[next.layers.count - 1].resourceID = clearID
-                        next.layers[next.layers.count - 1].strokes = [stroke]
-                        return (next, clearID, clear)
+                        guard let painted = try BrushEngine.paintLayer(stroke, canvasSize: doc.size) else { return (doc, nil, nil) }
+                        let id = UUID()
+                        next.layers.append(StickerLayer(resourceID: id, name: L10n.text("纯色画笔"),
+                                                        center: CGPoint(x: painted.rect.midX, y: painted.rect.midY), size: painted.rect.size))
+                        return (next, id, painted.image)
                     }
-                    let raster = try target == "canvas" ? DocumentEngine.render(doc,resources:assets) : DocumentEngine.renderBase(doc,resources:assets)
+                    let raster = try target == "canvas" ? (committedPreview ?? DocumentEngine.render(doc,resources:assets)) : DocumentEngine.renderBase(doc,resources:assets)
                     let id=UUID(); next.baseResourceID=id; next.originalSize=doc.size; next.operations=[]; next.baseStrokes=[stroke]
                     if target == "canvas" { next.layers=[]; next.activeLayerID = nil }
                     return (next,id,raster)
                 }.value
+                InteractionMetrics.shared.mark(trace, "BrushProcessingReady")
                 if let id=next.1,let raster=next.2 { resources[id]=raster }
+                latestInteractionID = trace
                 busy = false; commitDocument(next.0)
             } catch { self.error = error.localizedDescription; busy = false }
         }
@@ -71,6 +83,17 @@ struct BrushToolControls: View {
     var body: some View {
         let _ = languageSettings.language
         VStack(alignment: .leading, spacing: 14) {
+            if model.brushTool == .solid {
+                GlassSlidingPicker(selection: $model.brushShape,
+                                   options: BrushShape.allCases.map { ($0.title, $0) },
+                                   symbols: BrushShape.allCases.map(\.icon))
+                    .accessibilityLabel(L10n.text("画笔形状"))
+                if model.brushShape == .rectangle {
+                    NumericValueControl(title: L10n.text("圆角半径"), value: $model.brushCornerRadius, range: 0...1000, step: 5)
+                } else if model.brushShape == .ellipse {
+                    Toggle(L10n.text("正圆"), isOn: $model.brushCircle).toggleStyle(GlassToggleStyle())
+                }
+            }
             if model.brushTool == .pixelate || model.brushTool == .blur {
                 MosaicEffectSlider(value: effectBinding)
                 .accessibilityElement(children: .contain)
@@ -96,7 +119,9 @@ struct BrushToolControls: View {
             if model.brushTool == .solid {
                 EasyPicColorButton(title: L10n.text("画笔颜色"), selection: $model.brushColor)
             }
-            if [.pixelate,.blur,.solid].contains(model.brushTool) { Toggle(L10n.text("矩形选区"),isOn:$model.brushRectangle).toggleStyle(GlassToggleStyle()) }
+            if [.pixelate,.blur].contains(model.brushTool) || (model.brushTool == .solid && model.brushShape == .freehand) {
+                Toggle(L10n.text("矩形选区"),isOn:$model.brushRectangle).toggleStyle(GlassToggleStyle())
+            }
             if model.brushTool == .clone {
                 Button(L10n.text("重新取样")) { model.cloneSource=nil }.quickHelp(L10n.text("先点击画布设置取样点，再拖动绘制；Option 点击重新取样。"))
             }
@@ -110,54 +135,38 @@ struct BrushToolControls: View {
     }
 }
 
-private struct MosaicEffectSlider: View {
-    @Binding var value: Double
-    @GestureState private var dragging = false
-    var body: some View {
-        GeometryReader { geometry in
-            let inset: CGFloat = 3
-            let trackWidth = max(1, geometry.size.width - inset * 2)
-            let segment = trackWidth / 2
-            let selectedX = value < 0.5 ? 0 : segment
-            ZStack(alignment: .leading) {
-                HStack(spacing: 0) {
-                    Text(L10n.text("Pixel")).frame(maxWidth: .infinity)
-                    Text(L10n.text("Gaussian")).frame(maxWidth: .infinity)
-                }
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.primary.opacity(0.72))
-                .padding(.horizontal, 8)
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(EasyPicGlass.accent.opacity(0.24))
-                    .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
-                    .frame(width: segment, height: 26)
-                    .offset(x: selectedX)
-                    .animation(.easeOut(duration: 0.16), value: value < 0.5)
-            }
-            .padding(inset)
-            .glassSurface(.control, radius: 12, selected: true, interactive: true)
-            .frame(height: 32)
-            .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0).updating($dragging) { _, state, _ in
-                state = true
-            }.onChanged { event in
-                let fraction = min(1, max(0, (event.location.x - inset) / (geometry.size.width - inset * 2)))
-                value = fraction < 0.5 ? 0.25 : 0.75
-            }.onEnded { event in
-                withAnimation(.easeOut(duration: 0.16)) {
-                    value = event.location.x < geometry.size.width / 2 ? 0.25 : 0.75
-                }
-            })
+private extension BrushShape {
+    var icon: String {
+        switch self {
+        case .freehand: return "paintbrush.pointed"
+        case .line: return "line.diagonal"
+        case .arrow: return "arrow.up.right"
+        case .rectangle: return "rectangle"
+        case .ellipse: return "oval"
         }
-        .frame(minWidth: 160, maxWidth: .infinity, minHeight: 32, maxHeight: 32)
     }
 }
+
+private struct MosaicEffectSlider: View {
+    @Binding var value: Double
+    var body: some View {
+        GlassSlidingPicker(selection: Binding(get: { value < 0.5 ? 0 : 1 }, set: { value = $0 == 0 ? 0.25 : 0.75 }),
+                           options: [(L10n.text("像素模糊"), 0), (L10n.text("高斯模糊"), 1)])
+            .frame(minWidth: 160)
+    }
+}
+private final class StrokeSampleBuffer {
+    var points: [CGPoint] = []
+}
 struct BrushOverlay: View {
+    @EnvironmentObject private var frameClock: CanvasFrameClock
     @EnvironmentObject private var languageSettings: AppLanguageSettings
     @ObservedObject var model: EditorModel
     let scale: Double
     let size: CGSize
+    @State private var samples = StrokeSampleBuffer()
+    @State private var lastInputTrace: UUID?
+    @State private var points: [CGPoint] = []
     @State private var pointer: CGPoint?
     @State private var drawing = false
     @State private var committingPoints: [CGPoint] = []
@@ -171,8 +180,11 @@ struct BrushOverlay: View {
     var body: some View {
         let _ = languageSettings.language
         Canvas { context, _ in
-            let points = model.busy ? committingPoints : model.brushPoints
-            if model.brushRectangle, let a = points.first, let b = points.last {
+            let points = model.busy ? committingPoints : self.points
+            if model.brushTool == .solid, model.brushShape != .freehand,
+               let outline = BrushShapeGeometry.path(for: model.makeBrushStroke(points)) {
+                paint(Path(outline).applying(CGAffineTransform(scaleX: scale, y: scale)), in: &context)
+            } else if model.brushRectangle, let a = points.first, let b = points.last {
                 let rect = Path(CGRect(x: min(a.x, b.x) * scale, y: min(a.y, b.y) * scale,
                                        width: abs(a.x - b.x) * scale, height: abs(a.y - b.y) * scale))
                 if model.brushTool == .solid { context.fill(rect, with: .color(color.opacity(opacity))) }
@@ -185,7 +197,7 @@ struct BrushOverlay: View {
                                style: StrokeStyle(lineWidth: model.brushSize * scale, lineCap: .round, lineJoin: .round))
             }
             if let pointer, !model.busy {
-                if model.brushTool == .solid && !drawing && !model.brushRectangle {
+                if model.brushTool == .solid && !drawing && model.brushShape == .freehand && !model.brushRectangle {
                     paint([pointer], in: &context)
                 }
                 let diameter = max(2, model.brushSize * scale)
@@ -204,29 +216,39 @@ struct BrushOverlay: View {
             guard !model.busy else { return }
             let location = CGPoint(x: min(size.width, max(0, value.location.x)),
                                    y: min(size.height, max(0, value.location.y)))
-            pointer = CGRect(origin: .zero, size: size).contains(value.location) ? location : nil
-            drawing = true
+            let nextPointer = CGRect(origin: .zero, size: size).contains(value.location) ? location : nil
             let p = CGPoint(x: location.x / scale, y: location.y / scale)
             if model.brushTool == .clone && NSEvent.modifierFlags.contains(.option) {
                 model.cloneSource = p; return
             }
-            if model.brushPoints.isEmpty {
+            if samples.points.isEmpty {
                 let start = CGPoint(x: min(size.width, max(0, value.startLocation.x)) / scale,
                                     y: min(size.height, max(0, value.startLocation.y)) / scale)
-                model.brushPoints.append(start)
+                samples.points.append(start)
             }
-            if model.brushPoints.last != p { model.brushPoints.append(p) }
+            if model.brushTool == .solid && model.brushShape != .freehand {
+                samples.points = [samples.points[0], p]
+            } else if samples.points.last != p { samples.points.append(p) }
+            frameClock.submit("BrushInput", at: ProcessInfo.processInfo.systemUptime - max(0, Date().timeIntervalSince(value.time))) {
+                lastInputTrace = frameClock.currentTrace
+                points = samples.points; pointer = nextPointer; drawing = true
+                model.latestInteractionID = frameClock.currentTrace
+            }
         }.onEnded { _ in
-            let points = model.brushPoints
-            committingPoints = points; model.brushPoints = []; drawing = false
-            model.commitBrush(points)
+            frameClock.flush("BrushInput")
+            let strokePoints = samples.points
+            samples.points = []; committingPoints = strokePoints; points = []; drawing = false
+            model.latestInteractionID = lastInputTrace
+            model.commitBrush(strokePoints)
             if !model.busy { committingPoints = [] }
         })
+        .background(FramePresentationProbe(clock: frameClock))
+        .onDisappear { frameClock.cancel("BrushInput"); frameClock.cancel("BrushCursor") }
         .onContinuousHover { phase in
             guard !drawing else { return }
             switch phase {
-            case .active(let location): pointer = location
-            case .ended: pointer = nil
+            case .active(let location): frameClock.submit("BrushCursor") { pointer = location }
+            case .ended: frameClock.submit("BrushCursor") { pointer = nil }
             }
         }
         .onChange(of: model.busy) { _, busy in if !busy { committingPoints = [] } }
@@ -234,18 +256,20 @@ struct BrushOverlay: View {
 
     private func paint(_ points: [CGPoint], in context: inout GraphicsContext) {
         guard !points.isEmpty else { return }
+        var path = Path(); path.addLines(points)
+        paint(path, dot: points.count == 1 ? points[0] : nil, in: &context)
+    }
+    private func paint(_ path: Path, dot: CGPoint? = nil, in context: inout GraphicsContext) {
         // Draw the feathered mask in an isolated layer so overlaps do not darken one stroke.
         context.drawLayer { layer in
             layer.blendMode = .copy
             let softness = 1 - model.brushHardness
             let bands = softness > 0 ? 20 : 1
-            var path = Path(); path.addLines(points)
             for band in 1...bands {
                 let strength = Double(band) / Double(bands)
                 let diameter = model.brushSize * scale * max(0.01, 1 - softness * strength)
                 let ink = color.opacity(opacity * strength)
-                if points.count == 1 {
-                    let p = points[0]
+                if let p = dot {
                     layer.fill(Path(ellipseIn: CGRect(x: p.x - diameter / 2, y: p.y - diameter / 2,
                                                      width: diameter, height: diameter)), with: .color(ink))
                 } else {
