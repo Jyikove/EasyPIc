@@ -4,6 +4,7 @@ import CoreGraphics
 public enum BrushShape: String, Codable, CaseIterable, Identifiable {
     case freehand, line, arrow, rectangle, ellipse
     public var id: Self { self }
+    public var elementTitle: String { self == .freehand ? L10n.text("纯色画笔") : title }
     public var title: String {
         switch self {
         case .freehand: return L10n.text("自由画笔")

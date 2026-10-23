@@ -90,6 +90,11 @@ public enum BrushEngine {
             guard let context = CGContext(data: nil, width: maskWidth, height: Int(region.height), bitsPerComponent: 8,
                                           bytesPerRow: maskWidth, space: CGColorSpaceCreateDeviceGray(),
                                           bitmapInfo: CGImageAlphaInfo.none.rawValue) else { throw ImageFailure.renderFailed }
+            // Brush points and mask rows both start at the image's top edge.
+            // An unflipped bitmap context would reflect diagonal shapes inside
+            // their local patch when the preview becomes a committed layer.
+            context.translateBy(x: 0, y: region.height)
+            context.scaleBy(x: 1, y: -1)
             context.translateBy(x: -region.minX, y: -region.minY)
             context.setLineCap(.round); context.setLineJoin(.round); context.setBlendMode(.copy)
             let softness = 1 - stroke.hardness, bands = softness > 0 ? 20 : 1

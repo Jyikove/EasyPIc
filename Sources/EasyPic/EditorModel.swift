@@ -17,6 +17,8 @@ final class EditorModel: ObservableObject {
     @Published var brushTarget = "base"
     @Published var sidePanel: ViewerPanel?
     @Published var activeEditorTool: EditorTool?
+    @Published var historyPresentation: EditorHistoryPresentation?
+    @Published var layerReorderPreview: EditorDocument?
     var pendingEditorAction: (() -> Void)?
     @Published var recognizedText = ""
     @Published var recognizingText = false
@@ -46,6 +48,13 @@ final class EditorModel: ObservableObject {
     @Published var textEditing = false
     @Published var draftLayer: StickerLayer?
     @Published var documentPreview: CGImage?
+    @Published var adjustmentDraft: PhotoAdjustments?
+    @Published var adjustmentPreviewBase: CGImage?
+    var adjustmentPreviewTask: Task<Void, Never>?
+    var adjustmentCommitTask: Task<Void, Never>?
+    var adjustmentDragging = false
+    var adjustmentRevision = UUID()
+    let adjustmentPreviewService = AdjustmentPreviewService()
     var resources: [UUID: CGImage] = [:]
     var baseImage: CGImage?
     var savedDocument: EditorDocument?
@@ -174,6 +183,7 @@ final class EditorModel: ObservableObject {
     }
 
     private func load(_ input: URL) {
+        clearAdjustmentDraft()
         editorSession = nil
         prefetchTask?.cancel(); prefetchTask = nil
         if input.pathExtension.lowercased() == "easypic" { loadProject(input); return }
@@ -327,7 +337,7 @@ final class EditorModel: ObservableObject {
             } catch { self.error = error.localizedDescription }
             busy = false
             let continuation = pendingEditorAction; pendingEditorAction = nil
-            if succeeded { continuation?() }
+            if succeeded { continuation?() } else { historyPresentation = nil }
         }
     }
 
@@ -431,6 +441,14 @@ final class EditorModel: ObservableObject {
 
     func requestLeave(_ continuation: @escaping () -> Void) {
         guard !busy else { return }
+        if draftLayer?.text?.isUnfinished == true || document?.layers.contains(where: { $0.text?.isUnfinished == true }) == true {
+            finishInlineText { [weak self] in self?.requestLeave(continuation) }
+            return
+        }
+        if hasAdjustmentDraftChanges {
+            finishAdjustments { [weak self] in self?.requestLeave(continuation) }
+            return
+        }
         guard dirty else { continuation(); return }
         let response = GlassUtilityPresenter.askToLeave(
             title: L10n.text("当前图片还有未保存的修改"),

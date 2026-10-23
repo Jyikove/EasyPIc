@@ -59,7 +59,7 @@ struct NumericValueControl: View {
             if next != value { value = next }
             focused = false
         } label: {
-            Image(systemName: symbol).font(.system(size: 10, weight: .medium))
+            FunctionIcon(systemName: symbol).font(.system(size: 10, weight: .medium))
                 .frame(width: EditorValueLayout.adjustmentWidth, height: 22).contentShape(Rectangle())
         }
         .buttonStyle(GlassButtonStyle(radius: 7, horizontalPadding: 0, verticalPadding: 0))

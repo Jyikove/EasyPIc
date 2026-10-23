@@ -6,7 +6,6 @@ import AppKit
 struct EasyPicApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @FocusedValue(\.editorModel) private var focusedModel
-    @State private var recordingTimings = false
     @StateObject private var emptyModel = EditorModel()
     private var model: EditorModel { focusedModel ?? emptyModel }
     @StateObject private var languageSettings = AppLanguageSettings.shared
@@ -23,9 +22,6 @@ struct EasyPicApp: App {
         .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unifiedCompact)
         .commands {
-            CommandGroup(replacing: .appSettings) {
-                SettingsLink { Text(L10n.text("设置…")) }.keyboardShortcut(",")
-            }
             CommandGroup(replacing: .appInfo) {
                 Button(L10n.text("关于 EasyPic")) {
                     GlassUtilityPresenter.showAbout()
@@ -50,44 +46,12 @@ struct EasyPicApp: App {
             CommandGroup(after: .windowSize) {
                 Button(L10n.text("切换全屏")) { delegate.editorWindow?.toggleFullScreen(nil) }
                     .keyboardShortcut("f", modifiers: [.control, .command])
-            }
-            CommandMenu(L10n.text("性能诊断")) {
-                Toggle(L10n.text("记录交互耗时"), isOn: Binding(get: { recordingTimings }, set: {
-                    recordingTimings = $0; InteractionMetrics.shared.setEnabled($0)
-                }))
-                Button(L10n.text("导出性能报告…"), action: PerformanceReport.export)
-                Button(L10n.text("清空性能记录")) { InteractionMetrics.shared.reset() }
-            }
-            CommandMenu(L10n.text("图片")) {
-                Button(L10n.text("本地画笔…"),action:model.beginBrush).disabled(!model.canUseLayers)
-                Button(L10n.text("添加文字"), action: model.addText).disabled(!model.canUseLayers)
-                Button(L10n.text("添加图片贴纸…"), action: model.importSticker).disabled(!model.canUseLayers)
-                Button(L10n.text("向右旋转 90°")) { model.apply(.clockwise) }.keyboardShortcut("r").disabled(!model.canRotate)
-                Button(L10n.text("向左旋转 90°")) { model.apply(.counterclockwise) }.keyboardShortcut("r", modifiers: [.command, .shift]).disabled(!model.canRotate)
-                Button(L10n.text("水平镜像")) { model.apply(.mirrorHorizontal) }.disabled(!model.canTransform)
-                Button(L10n.text("垂直镜像")) { model.apply(.mirrorVertical) }.disabled(!model.canTransform)
-                Divider()
-                Button(L10n.text("将当前帧设为封面"), action: model.setLiveCover).disabled(!model.canEdit || model.livePhoto == nil)
-                Button(L10n.text("裁剪"), action: model.beginCrop).keyboardShortcut("k").disabled(!model.canEdit)
-                Button(L10n.text("应用裁剪"), action: model.commitCrop).disabled(!model.canApplyCrop)
-                Button(L10n.text("取消裁剪"), action: model.cancelCrop).keyboardShortcut(.escape, modifiers: []).disabled(!model.cropping || model.busy)
-                Button(L10n.text("退出画笔"), action: model.closeToolDetails).keyboardShortcut(.escape, modifiers: []).disabled(!model.brushMode || !model.canPerformEditorActions)
                 Button(L10n.text("适应窗口"), action: model.resetZoom).keyboardShortcut("0").disabled(model.image == nil)
-                Button(L10n.text("实际像素")) { model.resetZoom(); model.actualSize = true }.keyboardShortcut("1").disabled(model.image == nil || model.cropping)
-                Divider()
-                Button(L10n.text("上一张")) { model.navigate(-1) }.keyboardShortcut(.leftArrow, modifiers: []).disabled(!model.canNavigatePrevious)
-                Button(L10n.text("下一张")) { model.navigate(1) }.keyboardShortcut(.rightArrow, modifiers: []).disabled(!model.canNavigateNext)
-                Divider()
-                Button(L10n.text("播放 / 暂停")) {
-                    if model.livePhoto != nil { model.livePlayback.toggle() }
-                    else { model.playback.toggle() }
-                }.disabled(!model.canBrowse || (model.livePhoto == nil && model.mediaInfo?.animation == nil))
-                Button(L10n.text("从头播放")) {
-                    if model.livePhoto != nil { model.livePlayback.restart() }
-                    else { model.playback.restart() }
-                }.disabled(!model.canBrowse || (model.livePhoto == nil && model.mediaInfo?.animation == nil))
+                Button(L10n.text("实际像素")) { model.resetZoom(); model.actualSize = true }
+                    .keyboardShortcut("1").disabled(model.image == nil || model.cropping)
             }
         }
+
         Settings {
             LanguageSettingsView()
                 .environmentObject(languageSettings)
@@ -153,6 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var editors: [ObjectIdentifier: Entry] = [:]
     private var allowTermination = false
     private var legacyRedoMonitor: Any?
+    private let menuLayout = ApplicationMenuLayout()
     private final class Entry {
         weak var window: NSWindow?
         weak var model: EditorModel?
@@ -161,6 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func register(_ window: NSWindow, model: EditorModel) {
         editors[ObjectIdentifier(window)] = Entry(window, model)
         self.model = model; editorWindow = window
+        menuLayout.schedule()
     }
     func ready(_ model: EditorModel) {
         if self.model == nil { self.model = model }
@@ -182,14 +148,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
+        menuLayout.start()
         legacyRedoMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let handled = MainActor.assumeIsolated {
                 let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
-                guard modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "y",
-                      let self, event.window === self.editorWindow, let model = self.model,
-                      model.toolEnabled(.redo) else { return false }
-                model.chooseEditorTool(.redo)
-                return true
+                guard let self, event.window === self.editorWindow, let model = self.model else { return false }
+                let key = event.charactersIgnoringModifiers?.lowercased()
+                if modifiers == .command, key == "y", model.toolEnabled(.redo) { model.chooseEditorTool(.redo); return true }
+                if (modifiers == .command || modifiers == [.command, .shift]), key == "r", model.canRotate {
+                    model.apply(modifiers.contains(.shift) ? .counterclockwise : .clockwise); return true
+                }
+                if modifiers == .command, key == "k", model.canEdit { model.beginCrop(); return true }
+                if modifiers.isEmpty {
+                    if event.keyCode == 123, model.canNavigatePrevious { model.navigate(-1); return true }
+                    if event.keyCode == 124, model.canNavigateNext { model.navigate(1); return true }
+                    if event.keyCode == 53 {
+                        if model.cropping, !model.busy { model.cancelCrop(); return true }
+                        if model.brushMode, model.canPerformEditorActions { model.closeToolDetails(); return true }
+                    }
+                }
+                return false
             }
             return handled ? nil : event
         }

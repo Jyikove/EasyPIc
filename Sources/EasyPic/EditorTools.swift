@@ -2,7 +2,7 @@ import SwiftUI
 import EasyPicCore
 
 enum EditorTool: String, CaseIterable, Identifiable {
-    case undo, redo, crop, horizontal, vertical, rotate, sticker, text, solid, mosaic, repair
+    case undo, redo, crop, horizontal, vertical, rotate, adjust, sticker, text, solid, mosaic, repair
     case replaceOriginal, saveAs
     var id: Self { self }
     var showsDetails: Bool {
@@ -19,6 +19,7 @@ enum EditorTool: String, CaseIterable, Identifiable {
         case .horizontal: return L10n.text("水平镜像")
         case .vertical: return L10n.text("垂直镜像")
         case .rotate: return L10n.text("逆时针旋转")
+        case .adjust: return L10n.text("调整")
         case .sticker: return L10n.text("添加贴纸")
         case .text: return L10n.text("添加文本")
         case .solid: return L10n.text("纯色画笔")
@@ -36,6 +37,7 @@ enum EditorTool: String, CaseIterable, Identifiable {
         case .horizontal: return "arrow.left.and.right"
         case .vertical: return "arrow.up.and.down"
         case .rotate: return "arrow.counterclockwise"
+        case .adjust: return "slider.horizontal.3"
         case .sticker: return "photo.badge.plus"
         case .text: return "textformat"
         case .solid: return "paintbrush.pointed.fill"
@@ -47,10 +49,16 @@ enum EditorTool: String, CaseIterable, Identifiable {
     }
 }
 
+/// Keep the current controls mounted while history commits and restores their tool.
+struct EditorHistoryPresentation {
+    let textLayer: StickerLayer?
+    let cropRect: CGRect?
+}
+
 extension EditorModel {
     /// Finish pending edits before switching tools.
     var canPerformEditorActions: Bool {
-        image != nil && !isReadOnly && canRequestApplicationExit
+        image != nil && !isReadOnly && canRequestApplicationExit && historyPresentation == nil
     }
     var canRequestApplicationExit: Bool {
         !busy && !exportSheet && !choosingExportLocation &&
@@ -59,7 +67,7 @@ extension EditorModel {
     var hasTextDraftChanges: Bool {
         guard textEditing, let draftLayer else { return false }
         if document?.layers.contains(where: { $0.id == draftLayer.id }) == false {
-            return !(draftLayer.text?.content.isEmpty ?? true) || (draftLayer.text?.backgroundColor.alpha ?? 0) > 0
+            return draftLayer.text?.isUnfinished == false
         }
         return document?.layers.first(where: { $0.id == draftLayer.id }) != draftLayer
     }
@@ -68,32 +76,35 @@ extension EditorModel {
         if livePhoto != nil && tool != .undo && tool != .redo && tool != .crop && tool != .saveAs { return false }
         if tool == .replaceOriginal { return canReplaceOriginal }
         if tool == .saveAs { return true }
-        if tool == .undo { return canUndo || hasTextDraftChanges }
-        if tool == .redo { return canRedo && !hasTextDraftChanges }
+        if tool == .undo { return canUndo || hasTextDraftChanges || hasAdjustmentDraftChanges }
+        if tool == .redo { return canRedo && !hasTextDraftChanges && !hasAdjustmentDraftChanges }
         return true
     }
     func finishInlineText(then action: @escaping () -> Void) {
+        if hasAdjustmentDraftChanges {
+            finishAdjustments { [weak self] in self?.finishInlineText(then: action) }
+            return
+        }
         if cropping {
             finishCrop { [weak self] in self?.finishInlineText(then: action) }
             return
         }
-        guard textEditing else { action(); return }
-        guard var draft = draftLayer, draft.text?.isValid == true else {
-            error = L10n.text("请先输入有效的文字设置。"); return
+        guard var next = document else { action(); return }
+        if textEditing {
+            guard var draft = draftLayer, let text = draft.text else { return }
+            if !text.isUnfinished {
+                guard text.isValid else { error = L10n.text("请先输入有效的文字设置。"); return }
+                draft.name = text.content
+                if let index = next.layers.firstIndex(where: { $0.id == draft.id }) { next.layers[index] = draft }
+                else { next.layers.append(draft) }
+            } else { next.layers.removeAll { $0.id == draft.id } }
+            textEditing = false; previewTask?.cancel()
         }
-        let changed = hasTextDraftChanges
-        textEditing = false; previewTask?.cancel()
-        guard changed else {
-            draftLayer = nil
-            if document?.layers.contains(where: { $0.id == draft.id }) == false { selectedLayerID = nil }
-            action(); return
-        }
-        draft.name = String(draft.text?.content.prefix(24) ?? "").replacingOccurrences(of: "\n", with: " ")
-        if draft.name.isEmpty { draft.name = L10n.text("文字") }
+        next.layers.removeAll { $0.text?.isUnfinished == true }
+        if !next.layers.contains(where: { $0.id == selectedLayerID }) { selectedLayerID = nil }
+        guard next != document else { draftLayer = nil; action(); return }
         pendingEditorAction = action
-        if var doc = document, !doc.layers.contains(where: { $0.id == draft.id }) {
-            doc.layers.append(draft); commitDocument(doc)
-        } else { updateLayer(draft, commit: true) }
+        commitDocument(next)
     }
     func finishCrop(then action: @escaping () -> Void) {
         guard cropping else { action(); return }
@@ -113,13 +124,25 @@ extension EditorModel {
         if tool == .undo || tool == .redo {
             let current = activeEditorTool
             let ratio = cropRatio
+            historyPresentation = EditorHistoryPresentation(textLayer: textEditing ? selectedLayer : nil,
+                                                            cropRect: cropPixelRect)
             finishInlineText { [weak self] in
                 guard let self else { return }
-                self.cancelCrop(); self.cancelBrush()
+                self.cancelCrop()
                 self.sidePanel = .edit; self.activeEditorTool = current
-                self.pendingEditorAction = { [weak self] in self?.resumeEditorTool(current, cropRatio: ratio) }
+                self.pendingEditorAction = { [weak self] in
+                    guard let self else { return }
+                    self.resumeEditorTool(current, cropRatio: ratio)
+                    self.historyPresentation = nil
+                }
                 if tool == .undo { self.undo() } else { self.redo() }
+                // A crop commit may have consumed the available redo entry.
+                if !self.busy {
+                    let continuation = self.pendingEditorAction; self.pendingEditorAction = nil
+                    continuation?()
+                }
             }
+            if error != nil || (!busy && pendingEditorAction == nil) { historyPresentation = nil }
             return
         }
         finishInlineText { [weak self] in self?.activateEditorTool(tool) }
@@ -128,7 +151,7 @@ extension EditorModel {
         activeEditorTool = tool
         switch tool {
         case .crop: beginCrop(); if ratio != .free { selectCropRatio(ratio) }
-        case .solid, .mosaic, .repair: beginBrush()
+        case .solid, .mosaic, .repair: if !brushMode { beginBrush() }
         case .text: beginTextEditing()
         default: break
         }
@@ -153,7 +176,7 @@ extension EditorModel {
             beginBrush()
         case .repair: brushTool = .repair; brushRectangle = false; beginBrush()
         case .text: beginTextEditing()
-        case .sticker: break
+        case .sticker, .adjust: break
         }
     }
     func closeToolDetails() {
@@ -270,7 +293,7 @@ private struct EditorToolIcon: View {
                 .frame(width: 18, height: 18)
                 .clipShape(RoundedRectangle(cornerRadius: 1.5))
             } else {
-                Image(systemName: tool.icon).font(.system(size: 17, weight: .medium))
+                FunctionIcon(systemName: tool.icon).font(.system(size: 17, weight: .medium))
             }
         }
         .frame(width: 32, height: 32).foregroundStyle(tint)
@@ -284,31 +307,54 @@ private struct EditorToolDetails: View {
     @ObservedObject var model: EditorModel
     let tool: EditorTool
     @State private var panelSize = CGSize(width: 110, height: 540)
-    private var panelWidth: CGFloat { tool == .solid ? 264 : panelSize.width }
+    @State private var measuredPanelSize = CGSize(width: 110, height: 540)
+    @State private var historyLayoutLocked = false
+    private var panelWidth: CGFloat { [.solid, .adjust].contains(tool) ? 264 : panelSize.width }
+    private var layerFilter: LayerInspectorFilter? {
+        switch tool {
+        case .sticker: return .sticker
+        case .text: return .text
+        case .solid: return .brush
+        default: return nil
+        }
+    }
+    private var layerListHeight: CGFloat {
+        layerFilter.map { LayerElementList.height(for: model.listedLayers(matching: $0).count) } ?? 0
+    }
     var body: some View {
         let _ = languageSettings.language
         GeometryReader { geometry in
-            ScrollView(showsIndicators: false) {
-                ZStack(alignment: .topLeading) {
-                    panel.fixedSize(horizontal: true, vertical: true)
-                        .id(tool)
-                        .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
-                            // Measure the natural content, not the animated outer frame.
-                            guard abs(size.width - panelSize.width) > 0.5 || abs(size.height - panelSize.height) > 0.5 else { return }
-                            panelSize = size
-                        }
+            VStack(spacing: layerListHeight > 0 ? 10 : 0) {
+                if let filter = layerFilter, layerListHeight > 0 {
+                    LayerElementList(model: model, filter: filter)
+                        .frame(height: layerListHeight)
                         .transition(.opacity)
                 }
-                .animation(EasyPicMotion.panelAnimation(reduced: reduceMotion), value: tool)
+                ScrollView(showsIndicators: false) {
+                    ZStack(alignment: .topLeading) {
+                        panel.fixedSize(horizontal: true, vertical: true)
+                            .id(tool)
+                            .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+                                measuredPanelSize = size
+                                guard model.historyPresentation == nil, !historyLayoutLocked else { return }
+                                // Measure the natural content, not the animated outer frame.
+                                guard abs(size.width - panelSize.width) > 0.5 || abs(size.height - panelSize.height) > 0.5 else { return }
+                                panelSize = size
+                            }
+                            .transition(.opacity)
+                    }
+                    .animation(EasyPicMotion.panelAnimation(reduced: reduceMotion), value: tool)
+                }
+                .frame(height: min(max(0, geometry.size.height - layerListHeight - (layerListHeight > 0 ? 10 : 0)), panelSize.height))
+                .animation(EasyPicMotion.panelAnimation(reduced: reduceMotion), value: panelSize.height)
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .glassSurface(.panel, radius: 20)
+                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                    guard tool == .sticker else { return false }
+                    return model.importDroppedStickers(providers)
+                }
             }
-            .frame(height: min(geometry.size.height, panelSize.height))
-            .animation(EasyPicMotion.panelAnimation(reduced: reduceMotion), value: panelSize.height)
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .glassSurface(.panel, radius: 20)
-            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                guard tool == .sticker else { return false }
-                return model.importDroppedStickers(providers)
-            }
+            .animation(EasyPicMotion.panelAnimation(reduced: reduceMotion), value: layerListHeight)
             .frame(maxHeight: .infinity, alignment: .center)
         }
         .frame(width: panelWidth)
@@ -316,18 +362,39 @@ private struct EditorToolDetails: View {
         // The native window receives the target once, instead of being retargeted
         // for every intermediate frame of the SwiftUI width animation.
         .preference(key: EditorDetailsWidthPreference.self, value: panelWidth)
-        .disabled(model.busy)
+        .onChange(of: model.historyPresentation != nil) { _, restoring in
+            if restoring { historyLayoutLocked = true }
+        }
+        .task(id: model.historyPresentation != nil) {
+            guard model.historyPresentation == nil, historyLayoutLocked else { return }
+            // Native text/list measurements settle on the following layout pass.
+            // Publish only the final size, never the temporary collapsed controls.
+            do { try await Task.sleep(for: .milliseconds(32)) } catch { return }
+            guard model.historyPresentation == nil else { return }
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                panelSize = measuredPanelSize
+                historyLayoutLocked = false
+            }
+        }
+        .transaction {
+            if model.historyPresentation != nil || historyLayoutLocked {
+                $0.animation = nil; $0.disablesAnimations = true
+            }
+        }
+        .disabled(model.busy || model.historyPresentation != nil)
     }
     private var closeButton: some View {
-        Button(action: model.closeToolDetails) { Image(systemName: "xmark").frame(width: 22, height: 22) }
+        Button(action: model.closeToolDetails) { FunctionIcon(systemName: "xmark").frame(width: 22, height: 22) }
             .buttonStyle(GlassButtonStyle(radius: 7, horizontalPadding: 0, verticalPadding: 0)).quickHelp(L10n.text("收起工具详情")).accessibilityLabel(L10n.text("收起工具详情"))
             .disabled(!model.canPerformEditorActions)
     }
     // Flexible inputs need a usable width; ordinary controls keep their intrinsic size.
     private var minimumContentWidth: CGFloat? {
         switch tool {
-        case .text: return model.textEditing ? 220 : nil
-        case .solid: return 240
+        case .text: return 220
+        case .solid, .adjust: return 240
         case .mosaic, .repair: return 160
         default: return nil
         }
@@ -345,7 +412,7 @@ private struct EditorToolDetails: View {
                 HStack(spacing: 10) {
                     closeButton
                     Button(action: model.closeToolDetails) {
-                        Image(systemName: "checkmark").frame(width: 22, height: 22)
+                        FunctionIcon(systemName: "checkmark").frame(width: 22, height: 22)
                     }
                     .buttonStyle(GlassButtonStyle(radius: 7, horizontalPadding: 0, verticalPadding: 0))
                     .accessibilityLabel(L10n.text("完成裁剪"))
@@ -360,7 +427,10 @@ private struct EditorToolDetails: View {
                         Button(action: model.importSticker) {
                             Text(L10n.text("导入贴纸…")).frame(maxWidth: .infinity, alignment: .center)
                         }.buttonStyle(GlassButtonStyle()).disabled(!model.canUseLayers)
-                        LayerInspector(model: model, showsInsertionButtons: false, filter: .sticker)
+                        if let selected = model.selectedLayer, selected.text == nil, selected.brushElementShape == nil {
+                            LayerInspector(model: model, showsInsertionButtons: false, fullWidthActions: true, filter: .sticker)
+                        }
+                    case .adjust: AdjustmentToolControls(model: model)
                     case .text: TextToolControls(model: model)
                     case .solid, .mosaic, .repair: BrushToolControls(model: model)
                     case .undo, .redo, .horizontal, .vertical, .rotate, .replaceOriginal, .saveAs: EmptyView()
@@ -380,7 +450,7 @@ private struct CropToolControls: View {
     var body: some View {
         let _ = languageSettings.language
         VStack(alignment: .center, spacing: 10) {
-            if model.cropping {
+            if model.cropping || model.historyPresentation?.cropRect != nil {
                 VStack(spacing: 6) {
                     ForEach(CropRatio.allCases) { ratio in
                         Button { model.selectCropRatio(ratio) } label: {
@@ -394,7 +464,7 @@ private struct CropToolControls: View {
                     }
                 }
                 .accessibilityElement(children: .contain).accessibilityLabel(L10n.text("裁剪比例"))
-                if let rect = model.cropPixelRect {
+                if let rect = model.historyPresentation?.cropRect ?? model.cropPixelRect {
                     Text("\(Int(rect.width)) × \(Int(rect.height)) px")
                         .font(.system(size: 10, design: .monospaced))
                         .frame(maxWidth: .infinity, alignment: .center)
@@ -411,6 +481,9 @@ private struct CropToolControls: View {
 private struct TextToolControls: View {
     @EnvironmentObject private var languageSettings: AppLanguageSettings
     @ObservedObject var model: EditorModel
+    private var editingLayer: StickerLayer? {
+        model.historyPresentation?.textLayer ?? (model.textEditing ? model.selectedLayer : nil)
+    }
     var body: some View {
         let _ = languageSettings.language
         VStack(alignment: .leading, spacing: 16) {
@@ -419,10 +492,11 @@ private struct TextToolControls: View {
             } label: {
                 Text(L10n.text("新增文字")).frame(maxWidth: .infinity, alignment: .center)
             }.buttonStyle(GlassButtonStyle()).disabled(!model.canPerformEditorActions)
-            LayerInspector(model: model, showsInsertionButtons: false, fullWidthActions: true,
-                           filter: .text, showsLayerProperties: !model.textEditing)
-            if model.textEditing, let layer = model.selectedLayer, layer.text != nil {
-                InlineTextEditor(model: model, layer: model.draftLayer ?? layer).id(layer.id)
+            if editingLayer == nil, model.selectedLayer?.text != nil {
+                LayerInspector(model: model, showsInsertionButtons: false, fullWidthActions: true, filter: .text)
+            }
+            if let layer = editingLayer, layer.text != nil {
+                InlineTextEditor(model: model, layer: layer).id(layer.id)
             }
         }
     }

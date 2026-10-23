@@ -100,6 +100,12 @@ final class GrowingTextScrollView: NSScrollView {
         let height = min(Self.maximumHeight, max(Self.minimumHeight, natural))
         let overflowing = natural > Self.maximumHeight
         if hasVerticalScroller != overflowing { hasVerticalScroller = overflowing }
+        // Center short input within the minimum height; keep symmetric insets
+        // as wrapped lines grow, and use normal padding once scrolling is needed.
+        let verticalInset = overflowing ? 8 : max(8, (height - textHeight) / 2)
+        if abs(editor.textContainerInset.height - verticalInset) > 0.25 {
+            editor.textContainerInset = NSSize(width: 8, height: verticalInset)
+        }
         let documentHeight = max(height, natural)
         if abs(editor.frame.height - documentHeight) > 0.5 { editor.setFrameSize(NSSize(width: width, height: documentHeight)) }
         if !overflowing { contentView.scroll(to: .zero); reflectScrolledClipView(contentView) }

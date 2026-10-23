@@ -32,7 +32,7 @@ struct EasyPicFontButton: View {
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                     Text("Font").font(.custom(font.postScriptName, size: 24))
                                         .foregroundStyle(.primary)
-                                    Image(systemName: "checkmark").font(.system(size: 11))
+                                    FunctionIcon(systemName: "checkmark").font(.system(size: 11))
                                         .opacity(selection == font.postScriptName ? 1 : 0)
                                 }
                                 .padding(.horizontal, 10).frame(height: 42)

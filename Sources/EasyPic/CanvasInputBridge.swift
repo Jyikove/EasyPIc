@@ -7,6 +7,7 @@ struct CanvasInputBridge: NSViewRepresentable {
     var spacePanEnabled = false
     var shouldBeginPan: (CGPoint) -> Bool = { _ in false }
     var pan: (CGSize) -> Void = { _ in }
+    var backgroundTap: (CGPoint) -> Void = { _ in }
     var input: (NSEvent, CGPoint) -> Void
     func makeNSView(context: Context) -> InputView { InputView() }
     func updateNSView(_ view: InputView, context: Context) {
@@ -15,6 +16,7 @@ struct CanvasInputBridge: NSViewRepresentable {
         view.spacePanEnabled = spacePanEnabled
         view.shouldBeginPan = shouldBeginPan
         view.pan = pan
+        view.backgroundTap = backgroundTap
     }
     final class InputView: NSView {
         var frameClock: CanvasFrameClock?
@@ -25,9 +27,13 @@ struct CanvasInputBridge: NSViewRepresentable {
         }
         var shouldBeginPan: ((CGPoint) -> Bool)?
         var pan: ((CGSize) -> Void)?
+        var backgroundTap: ((CGPoint) -> Void)?
         var input: ((NSEvent, CGPoint) -> Void)?
         private var monitor: Any?
         private var lastPanPoint: CGPoint?
+        private var panStartPoint: CGPoint?
+        private var panMoved = false
+        private var panAllowsTap = false
         override var isFlipped: Bool { true }
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override func viewDidMoveToWindow() {
@@ -39,10 +45,13 @@ struct CanvasInputBridge: NSViewRepresentable {
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify, .leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
                 guard let self, event.window === self.window else { return event }
                 let point = self.convert(event.locationInWindow, from: nil)
-                if event.type == .leftMouseDown { self.lastPanPoint = nil }
+                if event.type == .leftMouseDown { self.lastPanPoint = nil; self.panStartPoint = nil }
                 // Keep a canvas pan captured until release, including outside the canvas.
                 if let previous = self.lastPanPoint {
                     if event.type == .leftMouseDragged {
+                        if let start = self.panStartPoint, hypot(point.x - start.x, point.y - start.y) > 3 {
+                            self.panMoved = true
+                        }
                         self.lastPanPoint = point
                         self.accumulatedPan.width += point.x - previous.x
                         self.accumulatedPan.height += point.y - previous.y
@@ -53,7 +62,10 @@ struct CanvasInputBridge: NSViewRepresentable {
                     }
                     if event.type == .leftMouseUp {
                         self.frameClock?.flush("CanvasPan"); self.flushPan()
+                        let isTap = self.panAllowsTap && !self.panMoved && self.bounds.contains(point)
                         self.lastPanPoint = nil
+                        self.panStartPoint = nil
+                        if isTap { self.backgroundTap?(point) }
                         return nil
                     }
                 }
@@ -62,6 +74,9 @@ struct CanvasInputBridge: NSViewRepresentable {
                     let spaceDrag = self.spacePanEnabled && CGEventSource.keyState(.combinedSessionState, key: 49)
                     guard spaceDrag || self.shouldBeginPan?(point) == true else { return event }
                     self.lastPanPoint = point
+                    self.panStartPoint = point
+                    self.panMoved = false
+                    self.panAllowsTap = !spaceDrag
                     return nil
                 }
                 guard event.type == .scrollWheel || event.type == .magnify else { return event }

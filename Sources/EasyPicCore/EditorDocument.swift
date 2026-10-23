@@ -8,6 +8,9 @@ public struct StickerLayer: Codable, Equatable, Identifiable {
     public var strokes: [BrushStroke]? = nil
     public var text: TextLayer? = nil
     public var svgData: Data? = nil
+    // Provenance survives rasterization, transforms, duplication and project saves.
+    public var brushShape: BrushShape? = nil
+    public var brushElementNumber: Int? = nil
     public var name: String
     public var center: CGPoint
     public var size: CGSize
@@ -19,6 +22,14 @@ public struct StickerLayer: Codable, Equatable, Identifiable {
     public var clips: [[CGPoint]] = []
     public init(resourceID: UUID, name: String, center: CGPoint, size: CGSize) {
         self.resourceID = resourceID; self.name = name; self.center = center; self.size = size
+    }
+    public var brushElementShape: BrushShape? {
+        guard text == nil else { return nil }
+        if let brushShape { return brushShape }
+        // Earlier versions only stored a generic localized name for painted patches.
+        guard svgData == nil,
+              ["纯色画笔", "纯色遮盖", "Brush", "Paint Brush", "Solid Brush"].contains(name) else { return nil }
+        return strokes?.first(where: { $0.tool == .solid })?.shape ?? .freehand
     }
     public var rasterKey: String {
         if let text { return "\(size.width):\(size.height):" + RenderCache.key(text) }
@@ -41,11 +52,43 @@ public struct EditorDocument: Codable, Equatable {
     public var baseResourceID: UUID
     public var originalSize: CGSize
     public var baseStrokes: [BrushStroke]? = nil
+    public var adjustments: PhotoAdjustments? = nil
     public var operations: [EditOperation] = []
     public var layers: [StickerLayer] = []
     public var activeLayerID: UUID?
     public init(baseResourceID: UUID, size: CGSize) { self.baseResourceID = baseResourceID; originalSize = size }
     public var contentKey: String { RenderCache.key(self) }
+    /// Storage is bottom to top. Moving one layer preserves all other relative order.
+    @discardableResult public mutating func moveLayer(_ id: UUID, relativeTo targetID: UUID, above: Bool) -> Bool {
+        guard id != targetID, let source = layers.firstIndex(where: { $0.id == id }),
+              layers.contains(where: { $0.id == targetID }) else { return false }
+        let layer = layers.remove(at: source)
+        let target = layers.firstIndex(where: { $0.id == targetID })!
+        let destination = target + (above ? 1 : 0)
+        layers.insert(layer, at: destination)
+        return source != destination
+    }
+    public func nextBrushElementNumber(for shape: BrushShape) -> Int {
+        let matching = layers.filter { $0.brushElementShape == shape }
+        return max(matching.count, matching.compactMap(\.brushElementNumber).max() ?? 0) + 1
+    }
+    public mutating func numberBrushElements() {
+        var highest: [BrushShape: Int] = [:]
+        for layer in layers {
+            if let shape = layer.brushElementShape, let number = layer.brushElementNumber {
+                highest[shape] = max(highest[shape] ?? 0, number)
+            }
+        }
+        for index in layers.indices {
+            guard let shape = layers[index].brushElementShape else { continue }
+            let number: Int
+            if let existing = layers[index].brushElementNumber { number = existing }
+            else { number = (highest[shape] ?? 0) + 1; highest[shape] = number }
+            layers[index].brushShape = shape
+            layers[index].brushElementNumber = number
+            layers[index].name = "\(shape.elementTitle) \(number)"
+        }
+    }
     public var referencedResourceIDs: Set<UUID> {
         Set([baseResourceID] + layers.filter { $0.text == nil }.map(\.resourceID))
     }
@@ -113,7 +156,8 @@ public enum DocumentEngine {
     public static func renderBase(_ document: EditorDocument, resources: [UUID: CGImage]) throws -> CGImage {
         guard var image = resources[document.baseResourceID] else { throw ImageFailure.unreadable }
         image = try stroked(image, strokes: document.baseStrokes ?? [])
-        return try ImageEngine.render(image, operations: document.operations)
+        image = try ImageEngine.render(image, operations: document.operations)
+        return try PhotoAdjustmentEngine.render(image, settings: document.adjustments ?? PhotoAdjustments())
     }
     private static func stroked(_ image: CGImage, strokes: [BrushStroke]) throws -> CGImage {
         guard !strokes.isEmpty else { return image }
@@ -233,8 +277,9 @@ public enum DocumentEngine {
         else { try fm.moveItem(at: staging, to: url) }
     }
     public static func load(_ url: URL) throws -> (EditorDocument, [UUID: CGImage]) {
-        let document = try JSONDecoder().decode(EditorDocument.self, from: Data(contentsOf: url.appendingPathComponent("document.json")))
+        var document = try JSONDecoder().decode(EditorDocument.self, from: Data(contentsOf: url.appendingPathComponent("document.json")))
         try validate(document)
+        document.numberBrushElements()
         var resources: [UUID: CGImage] = [:]
         for id in Set([document.baseResourceID] + document.layers.filter { $0.text == nil }.map(\.resourceID)) {
             resources[id] = try ImageEngine.load(url.appendingPathComponent(id.uuidString + ".png")).image
@@ -246,8 +291,10 @@ public enum DocumentEngine {
     private static func validate(_ d: EditorDocument) throws {
         guard d.version == 1, d.originalSize.width.isFinite, d.originalSize.height.isFinite, d.originalSize.width > 0, d.originalSize.height > 0,
               Set(d.layers.map(\.id)).count == d.layers.count else { throw ImageFailure.unreadable }
+        guard d.adjustments?.isValid != false else { throw ImageFailure.unreadable }
         guard (d.baseStrokes ?? []).allSatisfy(\.isValid) else { throw ImageFailure.unreadable }
         for l in d.layers {
+            guard l.brushElementNumber.map({ (1...1_000_000_000).contains($0) }) != false else { throw ImageFailure.unreadable }
             guard (l.strokes ?? []).allSatisfy(\.isValid) else { throw ImageFailure.unreadable }
             guard l.text?.isValid != false else { throw ImageFailure.unreadable }
             guard [l.center.x, l.center.y, l.size.width, l.size.height, l.angle, l.opacity].allSatisfy(\.isFinite),

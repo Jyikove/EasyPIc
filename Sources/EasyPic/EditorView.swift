@@ -14,7 +14,6 @@ struct EditorView: View {
     @State private var dropTarget = false
     @State private var toolbarBottomSpacing: CGFloat = 0
     @State private var sidebarWidth: CGFloat = 0
-    @State private var titleWidth: CGFloat = 1180
     @State private var navigationExpanded = false
     @StateObject private var sidebarLayout = SidebarWindowSizer(minimumWidth: SidebarWindowSizer.minimumViewerWidth)
     private let windowInset = CanvasLayout.windowInset
@@ -23,17 +22,6 @@ struct EditorView: View {
     private let toolbarControlInset: CGFloat = 3
     // The actual capsule is hosted in the titlebar at the whole-window midpoint.
     private let expandedToolbarWidth: CGFloat = 314
-    private var filenameWidth: CGFloat {
-        let stableWidth = sidebarLayout.viewportWidth ?? titleWidth
-        // Navigation now retracts in editing mode, so the filename only needs
-        // one normal button gap beside the collapsed, four-button center capsule.
-        return max(0, min(180, (stableWidth - 154) / 2 - 238))
-    }
-    private var navigationContentWidth: CGFloat {
-        108 + (model.fileURL != nil && filenameWidth > 0 ? filenameWidth + 28 : 0)
-    }
-
-
     var body: some View {
         let _ = languageSettings.language
         GeometryReader { geometry in
@@ -69,9 +57,6 @@ struct EditorView: View {
             .animation(EasyPicMotion.panelAnimation(reduced: reduceMotion), value: model.sidePanel)
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
-            if sidebarLayout.viewportWidth == nil { titleWidth = $0 }
-        }
         .disabled(showingDialog).allowsHitTesting(!showingDialog)
         .padding(.horizontal, windowInset)
         .padding(.bottom, windowInset)
@@ -81,9 +66,6 @@ struct EditorView: View {
             sidebarWidth = width > 0 ? width + 12 : 0
         }
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                navigationToolbar
-            }.sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .principal) {
                 // Keep the native titlebar height without allowing NSToolbar to
                 // choose the horizontal center of the visible controls.
@@ -106,7 +88,14 @@ struct EditorView: View {
         .background(WindowBridge(delegate: delegate, model: model))
         .background(SidebarWindowBridge(sizer: sidebarLayout, sidebarWidth: sidebarWidth))
         .background(WindowCenteredToolbar(width: expandedToolbarWidth, height: toolbarButtonHeight + 2 * toolbarControlInset,
-                                          hitWidth: model.sidePanel == .edit ? expandedToolbarWidth : 154) {
+                                          hitWidth: model.sidePanel == .edit ? expandedToolbarWidth : 154,
+                                          showsNavigation: model.sidePanel != .edit,
+                                          hasFilename: model.fileURL != nil,
+                                          navigation: { layout in
+            navigationToolbar(layout: layout).environmentObject(languageSettings)
+                .disabled(showingDialog || model.exportSheet)
+                .preferredColorScheme(.dark).tint(accent)
+        }) {
             centeredToolbar.environmentObject(languageSettings)
                 .disabled(showingDialog || model.exportSheet)
                 .preferredColorScheme(.dark).tint(accent)
@@ -184,43 +173,38 @@ struct EditorView: View {
             toolbarButton(L10n.text("预览"), "square.grid.2x2", disabled: model.image == nil || !model.canSwitchPanel, selected: model.sidePanel == .thumbnails) { model.togglePanel(.thumbnails) }
         }
     }
-    private var navigationToolbar: some View {
-        let editing = model.sidePanel == .edit
-        return ZStack(alignment: .leading) {
-            if editing {
+    private func navigationToolbar(layout: TitlebarNavigationLayout) -> some View {
+        ZStack(alignment: .leading) {
+            if layout.collapsed {
                 Button { navigationExpanded.toggle() } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 13, weight: .semibold))
+                    FunctionIcon(systemName: "ellipsis").font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.primary).frame(width: 22, height: 22).contentShape(Circle())
                 }
                 .buttonStyle(.plain).quickHelp(L10n.text("图片导航"))
                 .accessibilityLabel(L10n.text("图片导航"))
-                .disabled(showingDialog || model.exportSheet)
                 .popover(isPresented: $navigationExpanded, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
                     navigationButtons.padding(8)
                         .background(Capsule().fill(Color(red: 0.08, green: 0.20, blue: 0.34).opacity(0.8)))
                         .glassPopover(radius: 20)
                         .environmentObject(languageSettings)
                 }
-                .transition(.opacity)
             } else {
                 HStack(spacing: 12) {
                     navigationButtons
-                    if let name = model.fileURL?.lastPathComponent, filenameWidth > 0 {
+                    if let name = model.fileURL?.lastPathComponent, layout.filenameWidth > 0 {
                         Text(name).font(.system(size: 11, weight: .medium)).foregroundStyle(.white)
-                            .lineLimit(1).truncationMode(.middle).frame(width: filenameWidth)
+                            .lineLimit(1).truncationMode(.middle).frame(width: layout.filenameWidth)
                             .padding(.horizontal, 8).frame(height: toolbarButtonHeight)
                             .background(Capsule().fill(EasyPicGlass.blue.opacity(0.8)))
                             .quickHelp(name).accessibilityLabel(name)
                     }
-                }.transition(.opacity)
+                }
             }
         }
-        .frame(width: editing ? 22 : navigationContentWidth, height: toolbarButtonHeight, alignment: .leading)
+        .frame(width: max(0, layout.width - 2 * toolbarControlInset), height: toolbarButtonHeight, alignment: .leading)
         .clipped().padding(toolbarControlInset)
         .glassSurface(.panel, radius: 14)
-        .animation(EasyPicMotion.panelAnimation(reduced: reduceMotion), value: editing)
-        // Keep AppKit's leading origin steady while the visible capsule retracts left.
-        .frame(width: navigationContentWidth + 6, alignment: .leading).fixedSize()
+        .frame(width: layout.width).clipped()
     }
 
     private var centeredToolbar: some View {
@@ -262,10 +246,9 @@ struct EditorView: View {
     }
 
     private func toolbarButton(_ title: String, _ icon: String, disabled: Bool, selected: Bool = false, grouped: Bool = false, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Label(title, systemImage: icon).frame(width: 28, height: toolbarButtonHeight).contentShape(Rectangle()) }
+        Button(action: action) { Label(title, functionIcon: icon).frame(width: 28, height: toolbarButtonHeight).contentShape(Rectangle()) }
             .buttonStyle(ToolbarIconStyle(selected: selected, grouped: grouped, radius: toolbarButtonHeight / 2))
             .labelStyle(.iconOnly).quickHelp(title).accessibilityLabel(title)
-            .foregroundStyle(selected ? accent : .primary)
             .disabled(disabled)
     }
 
@@ -276,7 +259,7 @@ struct EditorView: View {
                 ImageCanvas(model: model, image: image)
             } else {
                 VStack(spacing: 18) {
-                    Image(systemName: "photo.on.rectangle.angled")
+                    FunctionIcon(systemName: "photo.on.rectangle.angled")
                         .font(.system(size: 48, weight: .ultraLight)).foregroundStyle(.tertiary)
                     Button(L10n.text("打开图片"), action: model.openPanel).buttonStyle(GlassButtonStyle(prominent: true)).tint(accent).controlSize(.large)
                 }
@@ -302,6 +285,14 @@ private struct ToolbarIconStyle: ButtonStyle {
                 .background(Capsule().fill(.white.opacity(configuration.isPressed ? 0.18 : (hovered ? 0.10 : 0))))
                 .contentShape(Capsule())
                 .onHover { hovered = $0 }
+        } else if selected {
+            configuration.label
+                .foregroundStyle(Color.white)
+                .background(Capsule().fill(Color(red: 0.08, green: 0.20, blue: 0.34).opacity(0.94)))
+                .glassSurface(.control, radius: radius, selected: true)
+                .contentShape(Capsule())
+                .opacity(enabled ? 1 : 0.36)
+                .scaleEffect(configuration.isPressed && enabled ? 0.97 : 1)
         } else {
             GlassButtonStyle(selected: selected, radius: radius, horizontalPadding: 0, verticalPadding: 0)
                 .makeBody(configuration: configuration)
@@ -331,7 +322,7 @@ struct ImageCanvas: View {
     private var allowsPanGesture: Bool {
         !model.hasRecognitionSelection && (model.viewerControlsEnabled ||
             (model.sidePanel == .edit && model.canPerformEditorActions &&
-             model.activeEditorTool == nil && !model.cropping && !model.brushMode && !model.textEditing))
+             (model.activeEditorTool == nil || model.activeEditorTool == .adjust) && !model.cropping && !model.brushMode && !model.textEditing))
     }
 
     var body: some View {
@@ -364,17 +355,18 @@ struct ImageCanvas: View {
                         LivePhotoFrameView(playback: model.livePlayback, poster: image).frame(width: size.width, height: size.height)
                     } else if model.mediaInfo?.animation != nil {
                         AnimatedFrameView(playback: model.playback, poster: image).frame(width: size.width, height: size.height)
-                    } else if model.sidePanel == .edit, let document = model.document, let background = model.baseImage {
+                    } else if model.sidePanel == .edit, let document = model.layerReorderPreview ?? model.document, let background = model.baseImage {
                         InteractiveDocumentView(document: document, draft: model.draftLayer, resources: model.resources,
-                                                base: background, service: model.renderService, scale: scale, size: size,
+                                                base: model.adjustmentPreviewBase ?? background, service: model.renderService, scale: scale, size: size,
                                                 viewport: CGRect(x: (size.width - geometry.size.width) / 2 - panOffset.width,
                                                                  y: (size.height - geometry.size.height) / 2 - panOffset.height,
-                                                                 width: geometry.size.width, height: geometry.size.height), spatialIndex: model.sceneIndex)
+                                                                 width: geometry.size.width, height: geometry.size.height), spatialIndex: model.layerReorderPreview == nil ? model.sceneIndex : nil)
                     } else {
                         NativeRasterImage(image: model.documentPreview ?? image).frame(width: size.width, height: size.height)
                     }
                     if model.rotationTransition != nil { Color.clear.allowsHitTesting(false) }
                     else if model.cropping { CropOverlay(model: model, size: size, scale: scale) }
+                    else if model.selectedBrushElement != nil { LayerCanvasOverlay(model: model, scale: scale, size: size) }
                     else if model.brushMode { BrushOverlay(model:model,scale:scale,size:size) }
                     else if model.sidePanel == .edit && (model.activeEditorTool == .sticker || model.activeEditorTool == .text) && model.livePhoto == nil && !model.isReadOnly { LayerCanvasOverlay(model: model, scale: scale, size: size) }
                     if model.isRecognitionPanel { RecognitionOverlay(model: model, size: size) }
@@ -415,6 +407,12 @@ struct ImageCanvas: View {
                     guard model.canPerformEditorActions else { return }
                     panOffset.width += delta.width
                     panOffset.height += delta.height
+                },
+                backgroundTap: { point in
+                    let origin = CGPoint(x: (geometry.size.width - size.width) / 2 + panOffset.width,
+                                         y: (geometry.size.height - size.height) / 2 + panOffset.height)
+                    model.handleCanvasSelectionTap(at: CGPoint(x: (point.x - origin.x) / scale,
+                                                              y: (point.y - origin.y) / scale), scale: scale)
                 }
             ) { event, point in
                 guard !model.cropping, !model.hasRecognitionSelection else { return }
@@ -481,8 +479,8 @@ struct LivePhotoCoverControls: View {
         let _ = languageSettings.language
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Button(action: playback.toggle) { Label(playback.isPlaying ? L10n.text("暂停") : L10n.text("播放"), systemImage: playback.isPlaying ? "pause.fill" : "play.fill") }
-                Button(action: playback.restart) { Image(systemName: "backward.end.fill") }.quickHelp(L10n.text("从头播放"))
+                Button(action: playback.toggle) { Label(playback.isPlaying ? L10n.text("暂停") : L10n.text("播放"), functionIcon: playback.isPlaying ? "pause.fill" : "play.fill") }
+                Button(action: playback.restart) { FunctionIcon(systemName: "backward.end.fill") }.quickHelp(L10n.text("从头播放"))
             }.buttonStyle(GlassButtonStyle())
             Toggle(L10n.text("静音"), isOn: $playback.muted).toggleStyle(GlassToggleStyle()).font(.system(size: 12))
             if let live = model.livePhoto {
@@ -518,7 +516,7 @@ struct LivePhotoExportView: View {
     var body: some View {
         let _ = languageSettings.language
         VStack(alignment: .leading, spacing: 20) {
-            Label(L10n.text("导出 Live Photo"), systemImage: "livephoto").font(.title2.weight(.medium))
+            Label(L10n.text("导出 Live Photo"), functionIcon: "livephoto").font(.title2.weight(.medium))
             Text(L10n.text("创建新的配对文件夹，包含 LivePhoto.JPG 和 LivePhoto.MOV。照片与视频同步裁剪，保留声音，并记录所选封面的时间。"))
             Text(L10n.text("可直接在 EasyPic 中重新打开导出的 JPG 或 MOV。向 Apple“照片”导入时，请同时选择这两个文件。"))
                 .foregroundStyle(.secondary)

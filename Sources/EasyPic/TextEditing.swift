@@ -3,6 +3,16 @@ import AppKit
 import EasyPicCore
 
 extension EditorModel {
+    func selectTextLayer(_ id: UUID) {
+        guard sidePanel == .edit, activeEditorTool == .text, canPerformEditorActions,
+              document?.layers.contains(where: { $0.id == id && $0.text != nil }) == true,
+              draftLayer?.id != id else { return }
+        finishInlineText { [weak self] in
+            guard let self, self.sidePanel == .edit, self.activeEditorTool == .text else { return }
+            self.selectedLayerID = id
+            self.editText()
+        }
+    }
     func beginTextEditing() {
         guard canUseLayers else { return }
         if selectedLayer?.text != nil { editText(); return }
@@ -24,15 +34,15 @@ extension EditorModel {
            document?.layers.contains(where: { $0.id == draftLayer.id }) == false {
             textEditing = false; self.draftLayer = nil; previewTask?.cancel()
         }
-        guard canUseLayers, var doc = document else { return }
+        guard canUseLayers, let doc = document else { return }
         startEditorSessionIfNeeded()
         sidePanel = .edit; activeEditorTool = .text
         var layer = StickerLayer(resourceID: UUID(), name: L10n.text("文字"), center: CGPoint(x: doc.size.width / 2, y: doc.size.height / 2), size: CGSize(width: 1, height: 1))
-        var text = TextLayer(); text.fontSize = max(12, min(96, doc.size.width / 15)); layer.text = text
+        var text = TextLayer(); text.placeholderContent = text.content
+        text.fontSize = max(12, min(96, doc.size.width / 15)); layer.text = text
         layer.size = text.naturalSize
-        doc.layers.append(layer); selectedLayerID = layer.id
-        pendingEditorAction = { [weak self] in self?.editText() }
-        commitDocument(doc)
+        // Keep untouched templates out of both the document and undo history.
+        selectedLayerID = layer.id; draftLayer = layer; textEditing = true
     }
     func cancelTextEditing() {
         textEditing = false; draftLayer = nil; previewTask?.cancel()
@@ -54,8 +64,10 @@ struct InlineTextEditor: View {
     private func binding<T>(_ key: WritableKeyPath<TextLayer, T>) -> Binding<T> {
         Binding(get: { text[keyPath: key] }, set: { value in
             var next = text; next[keyPath: key] = value
+            if next.content != text.content { next.placeholderContent = nil }
             let needsLayout = next.layoutKey != text.layoutKey
             layer.text = next
+            layer.name = next.content.isEmpty ? L10n.text("文字") : next.content
             if needsLayout { layer.size = next.naturalSize }
             model.updateLayer(layer, commit: false)
         })
@@ -67,6 +79,7 @@ struct InlineTextEditor: View {
                 .glassSurface(.input, radius: 12, selected: contentFocused)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             EasyPicFontButton(selection: binding(\.fontName))
+            color(L10n.text("文字颜色"), \.color)
             number(L10n.text("字号"), \.fontSize, 1...4096)
             HStack(spacing: 6) {
                 Toggle(isOn: binding(\.bold)) {
@@ -76,35 +89,10 @@ struct InlineTextEditor: View {
                     Text("I").font(.system(size: 15, weight: .bold, design: .serif).italic()).frame(width: 24, height: 22)
                 }.toggleStyle(GlassToggleStyle(isButton: true)).quickHelp(L10n.text("斜体")).accessibilityLabel(L10n.text("斜体"))
             }
-            color(L10n.text("文字颜色"), \.color)
-            HStack(spacing: 2) {
-                ForEach(TextAlignmentControl.allCases) { control in
-                    Button {
-                        var next = text
-                        if let horizontal = control.horizontal {
-                            next.vertical = false
-                            next.alignment = horizontal
-                            next.verticalAlignment = .top
-                        } else if let vertical = control.vertical {
-                            next.vertical = true
-                            next.alignment = .right
-                            next.verticalAlignment = vertical
-                        }
-                        layer.text = next; layer.size = next.naturalSize
-                        model.updateLayer(layer, commit: false)
-                    } label: {
-                        TextAlignmentIcon(control: control)
-                            .frame(maxWidth: .infinity, minHeight: 28)
-                            .foregroundStyle(control.isSelected(in: text) ? EasyPicGlass.accent : .primary)
-                    }
-                    .buttonStyle(GlassButtonStyle(selected: control.isSelected(in: text), radius: 6,
-                                                  horizontalPadding: 0, verticalPadding: 0)).quickHelp(control.title).accessibilityLabel(control.title)
-                    .accessibilityAddTraits(control.isSelected(in: text) ? .isSelected : [])
-                }
-            }
-            .padding(3).frame(maxWidth: .infinity)
-            .glassSurface(.input, radius: 9)
-            .accessibilityElement(children: .contain).accessibilityLabel(L10n.text("对齐"))
+            GlassSlidingPicker(selection: alignmentSelection,
+                               options: TextAlignmentControl.allCases.map { ($0.title, $0) },
+                               customIcon: { AnyView(TextAlignmentIcon(control: $0)) })
+                .accessibilityLabel(L10n.text("对齐"))
             number(L10n.text("字距"), \.letterSpacing, -100...1000)
             number(L10n.text("行距"), \.lineSpacing, 0...1000)
             Divider()
@@ -120,6 +108,24 @@ struct InlineTextEditor: View {
         .onChange(of: model.draftLayer) { _, draft in
             if let draft, draft.id == layer.id { layer = draft }
         }
+    }
+    private var alignmentSelection: Binding<TextAlignmentControl> {
+        Binding(get: {
+            TextAlignmentControl.allCases.first { $0.isSelected(in: text) } ?? .left
+        }, set: { control in
+            var next = text
+            if let horizontal = control.horizontal {
+                next.vertical = false
+                next.alignment = horizontal
+                next.verticalAlignment = .top
+            } else if let vertical = control.vertical {
+                next.vertical = true
+                next.alignment = .right
+                next.verticalAlignment = vertical
+            }
+            layer.text = next; layer.size = next.naturalSize
+            model.updateLayer(layer, commit: false)
+        })
     }
     private func number(_ title: String, _ key: WritableKeyPath<TextLayer, Double>, _ range: ClosedRange<Double>, step: Double = 2) -> some View {
         NumericValueControl(title: title, value: binding(key), range: range, step: step)
@@ -167,25 +173,32 @@ private enum TextAlignmentControl: CaseIterable, Identifiable {
 private struct TextAlignmentIcon: View {
     let control: TextAlignmentControl
     var body: some View {
-        Canvas { context, _ in
-            var path = Path()
-            for index in 0..<3 {
-                let length: CGFloat = index == 2 ? 9 : 18
-                let start: CGPoint
-                let end: CGPoint
-                if let horizontal = control.horizontal {
-                    let x: CGFloat = horizontal == .left ? 1 : (horizontal == .center ? (20 - length) / 2 : 19 - length)
-                    let y = CGFloat(4 + index * 6)
-                    start = CGPoint(x: x, y: y); end = CGPoint(x: x + length, y: y)
-                } else {
-                    let x = CGFloat(4 + index * 6)
-                    let y: CGFloat = control == .top ? 1 : (control == .verticalCenter ? (20 - length) / 2 : 19 - length)
-                    start = CGPoint(x: x, y: y); end = CGPoint(x: x, y: y + length)
-                }
-                path.move(to: start); path.addLine(to: end)
+        TextAlignmentGlyph(control: control)
+            .stroke(Color.white.opacity(0.94), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+            .frame(width: 20, height: 20).accessibilityHidden(true)
+    }
+}
+
+/// Explicit vector strokes remain visible inside the picker's plain button labels.
+private struct TextAlignmentGlyph: Shape {
+    let control: TextAlignmentControl
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        for index in 0..<3 {
+            let length: CGFloat = index == 2 ? 9 : 18
+            let start: CGPoint
+            let end: CGPoint
+            if let horizontal = control.horizontal {
+                let x: CGFloat = horizontal == .left ? 1 : (horizontal == .center ? (20 - length) / 2 : 19 - length)
+                let y = CGFloat(4 + index * 6)
+                start = CGPoint(x: x, y: y); end = CGPoint(x: x + length, y: y)
+            } else {
+                let x = CGFloat(4 + index * 6)
+                let y: CGFloat = control == .top ? 1 : (control == .verticalCenter ? (20 - length) / 2 : 19 - length)
+                start = CGPoint(x: x, y: y); end = CGPoint(x: x, y: y + length)
             }
-            context.stroke(path, with: .foreground, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+            path.move(to: start); path.addLine(to: end)
         }
-        .frame(width: 20, height: 20).accessibilityHidden(true)
+        return path
     }
 }

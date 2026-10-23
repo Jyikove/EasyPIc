@@ -16,7 +16,12 @@ public enum TextAlignment: String, Codable, CaseIterable { case left, center, ri
 public enum TextVerticalAlignment: String, Codable, CaseIterable { case top, center, bottom }
 public struct TextLayer: Codable, Equatable {
     public static let defaultBackgroundCornerRadius: Double = 0
-    public var content = L10n.text("双击编辑文字")
+    public var content = L10n.text("编辑文字")
+    /// Only new, untouched template text is disposable; literal user text is preserved.
+    public var placeholderContent: String? = nil
+    public var isUnfinished: Bool {
+        content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || placeholderContent == content
+    }
     public var fontName = "PingFangSC-Regular"
     public var fontSize: Double = 48
     public var color = TextColor(1, 1, 1)
@@ -46,6 +51,7 @@ public struct TextLayer: Codable, Equatable {
     }
     public var layoutKey: String {
         var geometry = self
+        geometry.placeholderContent = nil
         geometry.color = TextColor(0, 0, 0); geometry.strokeColor = TextColor(0, 0, 0)
         geometry.shadowColor = TextColor(0, 0, 0); geometry.backgroundColor = TextColor(0, 0, 0)
         geometry.shadowX = 0; geometry.shadowY = 0; geometry.shadowBlur = 0; geometry.cornerRadius = 0

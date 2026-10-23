@@ -162,7 +162,7 @@ private struct FolderThumbnail: View {
             if let image {
                 Image(decorative: image, scale: 1).resizable().scaledToFit().padding(5)
             } else if failed {
-                Image(systemName: "exclamationmark.triangle").foregroundStyle(.secondary)
+                FunctionIcon(systemName: "exclamationmark.triangle").foregroundStyle(.secondary)
             } else { ProgressView().controlSize(.small) }
         }
         .frame(height: 110)
@@ -193,11 +193,13 @@ struct TextRecognitionPanel: View {
                                    options: [(L10n.text("全部"), .all), (L10n.text("分条"), .separate)])
                     .accessibilityLabel(L10n.text("文字显示方式"))
             }
-            HStack {
-                if !textMode { Text(L10n.text("二维码")).font(.headline) }
-                Spacer()
-                ClipboardCopyButton(text: copyText, title: L10n.text("复制全部文本"))
-                    .disabled(model.recognizingText || copyText.isEmpty)
+            if !textMode || model.recognitionPresentation == .all {
+                HStack {
+                    if !textMode { Text(L10n.text("二维码")).font(.headline) }
+                    Spacer()
+                    ClipboardCopyButton(text: copyText, title: L10n.text("复制全部文本"))
+                        .disabled(model.recognizingText || copyText.isEmpty)
+                }
             }
             if model.recognizingText || model.busy {
                 HStack { ProgressView().controlSize(.small); Text(L10n.text("正在识别…")).foregroundStyle(.secondary) }

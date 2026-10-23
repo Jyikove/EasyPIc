@@ -112,8 +112,14 @@ private struct GlassButtonBody: View {
         configuration.label
             .padding(.horizontal, style.horizontalPadding).padding(.vertical, style.verticalPadding)
             .foregroundStyle(style.destructive ? Color(red: 1, green: 0.56, blue: 0.58) :
-                ((style.selected || style.prominent) ? EasyPicGlass.accent : Color.primary))
+                ((style.selected || style.prominent) ? Color.white : Color.primary))
             .contentShape(RoundedRectangle(cornerRadius: style.radius))
+            .background {
+                if style.selected || style.prominent {
+                    RoundedRectangle(cornerRadius: style.radius, style: .continuous)
+                        .fill(Color(red: 0.08, green: 0.20, blue: 0.34).opacity(0.94))
+                }
+            }
             .glassSurface(.control, radius: style.radius,
                           selected: style.selected || style.prominent || (hovered && enabled), interactive: true)
             .opacity(enabled ? 1 : 0.36)
@@ -177,6 +183,7 @@ struct GlassSlidingPicker<Value: Hashable>: View {
     @Binding var selection: Value
     let options: [(String, Value)]
     var symbols: [String]? = nil
+    var customIcon: ((Value) -> AnyView)? = nil
     @Environment(\.isEnabled) private var enabled
     private var index: Int { options.firstIndex { $0.1 == selection } ?? 0 }
     var body: some View {
@@ -195,8 +202,10 @@ struct GlassSlidingPicker<Value: Hashable>: View {
                     ForEach(options.indices, id: \.self) { i in
                         Button { selection = options[i].1 } label: {
                             Group {
-                                if let symbols, symbols.indices.contains(i) {
-                                    Image(systemName: symbols[i]).font(.system(size: 14, weight: .medium))
+                                if let customIcon {
+                                    customIcon(options[i].1)
+                                } else if let symbols, symbols.indices.contains(i) {
+                                    FunctionIcon(systemName: symbols[i]).font(.system(size: 14, weight: .medium))
                                 } else { Text(options[i].0) }
                             }
                             .frame(width: segment, height: 26).contentShape(Rectangle())
@@ -231,12 +240,20 @@ struct GlassSlidingPicker<Value: Hashable>: View {
 
 /// Continuous dragging, track clicks, keyboard arrows and VoiceOver adjustment share one value path.
 struct GlassSlider: View {
+    enum ThumbStyle { case glass, whiteBar }
     @Binding var value: Double
     let range: ClosedRange<Double>
     @Environment(\.isEnabled) private var enabled
     @FocusState private var focused: Bool
     @State private var dragging = false
-    init(value: Binding<Double>, in range: ClosedRange<Double>) { _value = value; self.range = range }
+    let trackColors: [Color]
+    let thumbStyle: ThumbStyle
+    var onEditingChanged: (Bool) -> Void = { _ in }
+    init(value: Binding<Double>, in range: ClosedRange<Double>, trackColors: [Color] = [], thumbStyle: ThumbStyle = .glass,
+         onEditingChanged: @escaping (Bool) -> Void = { _ in }) {
+        _value = value; self.range = range; self.trackColors = trackColors; self.thumbStyle = thumbStyle
+        self.onEditingChanged = onEditingChanged
+    }
     private var fraction: Double {
         guard value.isFinite, range.upperBound > range.lowerBound else { return 0 }
         return min(1, max(0, (value - range.lowerBound) / (range.upperBound - range.lowerBound)))
@@ -252,21 +269,37 @@ struct GlassSlider: View {
             let travel = max(1, geometry.size.width - diameter)
             let progress = travel * fraction
             ZStack(alignment: .leading) {
-                Capsule().fill(.clear).frame(height: 6)
-                    .glassSurface(.input, radius: 3)
-                Capsule().fill(EasyPicGlass.accent.opacity(0.28))
-                    .frame(width: progress + diameter / 2, height: 6)
-                    .glassSurface(.control, radius: 3, selected: true)
-                Circle().fill(.clear).frame(width: diameter, height: diameter)
-                    .glassSurface(.control, radius: diameter / 2, selected: focused || dragging, interactive: true)
-                    .scaleEffect(dragging ? 1.1 : 1).offset(x: progress)
+                if trackColors.isEmpty {
+                    Capsule().fill(.clear).frame(height: 6)
+                        .glassSurface(.input, radius: 3)
+                    Capsule().fill(EasyPicGlass.accent.opacity(0.28))
+                        .frame(width: progress + diameter / 2, height: 6)
+                        .glassSurface(.control, radius: 3, selected: true)
+                } else {
+                    // Keep the entire spectrum visible instead of covering it with progress tint.
+                    Capsule().fill(LinearGradient(colors: trackColors, startPoint: .leading, endPoint: .trailing))
+                        .frame(height: 8)
+                        .glassSurface(.input, radius: 4)
+                }
+                if thumbStyle == .glass {
+                    Circle().fill(.clear).frame(width: diameter, height: diameter)
+                        .glassSurface(.control, radius: diameter / 2, selected: focused || dragging, interactive: true)
+                        .scaleEffect(dragging ? 1.1 : 1).offset(x: progress)
+                } else {
+                    Capsule().fill(Color.white)
+                        .frame(width: 4, height: 16)
+                        .shadow(color: .black.opacity(0.25), radius: 1.5, y: 0.5)
+                        .frame(width: diameter, height: 24)
+                        .offset(x: progress)
+                }
             }
             .frame(height: 24).contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0).onChanged { event in
-                guard enabled else { return }; focused = true; dragging = true
+                guard enabled else { return }; focused = true
+                if !dragging { dragging = true; onEditingChanged(true) }
                 let ratio = min(1, max(0, (event.location.x - diameter / 2) / travel))
                 setValue(range.lowerBound + ratio * (range.upperBound - range.lowerBound))
-            }.onEnded { _ in dragging = false })
+            }.onEnded { _ in dragging = false; onEditingChanged(false) })
         }
         .frame(minWidth: 48, maxWidth: .infinity).frame(height: 24)
         .opacity(enabled ? 1 : 0.36)
@@ -294,7 +327,7 @@ struct GlassDialog<Actions: View>: View {
     @ViewBuilder var actions: () -> Actions
     var body: some View {
         VStack(spacing: 18) {
-            Image(systemName: icon).font(.system(size: 30, weight: .light)).foregroundStyle(EasyPicGlass.accent)
+            FunctionIcon(systemName: icon).font(.system(size: 30, weight: .light)).foregroundStyle(EasyPicGlass.accent)
             Text(title).font(.system(size: 18, weight: .semibold)).multilineTextAlignment(.center)
             Text(message).font(.system(size: 13)).foregroundStyle(.secondary).multilineTextAlignment(.center)
             actions()

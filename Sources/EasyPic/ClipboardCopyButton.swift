@@ -19,7 +19,7 @@ struct ClipboardCopyButton: View {
                 if feedbackID == id { success = false }
             }
         } label: {
-            Image(systemName: success ? "checkmark" : "doc.on.doc").frame(width: 14, height: 14)
+            FunctionIcon(systemName: success ? "checkmark" : "doc.on.doc").frame(width: 14, height: 14)
                 .foregroundStyle(success ? EasyPicGlass.accent : .primary)
         }
         .quickHelp(success ? L10n.text("已复制") : title)

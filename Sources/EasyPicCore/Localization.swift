@@ -68,6 +68,17 @@ public enum L10n {
         return name
     }
     static let english: [String: String] = [
+        "调整": "Adjust",
+        "曝光": "Exposure",
+        "亮度": "Brightness",
+        "对比度": "Contrast",
+        "饱和度": "Saturation",
+        "高光": "Highlights",
+        "阴影": "Shadows",
+        "色温": "Temperature",
+        "色调": "Tint",
+        "锐化": "Sharpen",
+        "重置调整": "Reset Adjustments",
         "周围没有足够的图像内容，请缩小消除范围。": "Not enough surrounding content. Erase a smaller area.",
         "消除范围过大，请分几次涂抹。": "Erase a smaller area in separate strokes.",
         "已复制": "Copied",
@@ -137,8 +148,6 @@ public enum L10n {
         "蓝色": "Blue",
         "紫色": "Purple",
         "粉色": "Pink",
-        "亮度": "Brightness",
-        "饱和度": "Saturation",
         "透明度": "Opacity",
         "圆形色盘": "Color Wheel",
         "拖动选择颜色；圆心为灰白，边缘色彩更浓。": "Drag to choose a color. Colors become more saturated toward the edge.",
@@ -332,9 +341,10 @@ public enum L10n {
         "视频写入中断。": "Video writing was interrupted.",
         "无法写入视频或音频帧。": "Cannot write a video or audio frame.",
         "动态照片播放失败。": "Motion photo playback failed.",
-        "双击编辑文字": "Double-click to edit text",
+        "编辑文字": "Edit text",
         "语言": "Language",
         "设置": "Settings",
+        "视图与窗口": "View & Window",
         "设置…": "Settings…",
         "重新启动 EasyPic 后，系统菜单和文件选择窗口也会使用所选语言。": "Restart EasyPic to apply this language to system menus and file dialogs.",
         "界面语言": "Interface Language"

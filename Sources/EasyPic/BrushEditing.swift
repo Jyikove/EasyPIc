@@ -3,6 +3,12 @@ import AppKit
 import EasyPicCore
 
 extension EditorModel {
+    func toggleBrushElement(_ id: UUID) {
+        guard canPerformEditorActions, sidePanel == .edit, activeEditorTool == .solid,
+              document?.layers.contains(where: { $0.id == id && $0.brushElementShape != nil }) == true else { return }
+        draftLayer = nil
+        selectedLayerID = selectedLayerID == id ? nil : id
+    }
     func beginBrush() {
         guard canUseLayers else { return }
         startEditorSessionIfNeeded(); sidePanel = .edit
@@ -20,7 +26,7 @@ extension EditorModel {
                            constrainCircle: brushTool == .solid ? brushCircle : nil)
     }
     func commitBrush(_ points: [CGPoint]) {
-        guard brushMode, !busy, let doc = document, !points.isEmpty else { return }
+        guard brushMode, selectedBrushElement == nil, !busy, let doc = document, !points.isEmpty else { return }
         if brushTool == .clone && cloneSource == nil { cloneSource = points[0]; status = L10n.text("已设置克隆取样点，拖动开始绘制"); return }
         let stroke = makeBrushStroke(points)
         if brushTool == .solid && brushShape != .freehand && BrushShapeGeometry.path(for: stroke) == nil { return }
@@ -53,19 +59,25 @@ extension EditorModel {
                         var strokes=layer.strokes ?? []; strokes.append(mapped); next.layers[index].strokes=strokes
                         return (next,nil,nil)
                     }
-                    if target == "base", doc.operations.isEmpty {
+                    if target == "base", doc.operations.isEmpty, doc.adjustments == nil {
                         var strokes=next.baseStrokes ?? []; strokes.append(stroke); next.baseStrokes=strokes
                         return (next,nil,nil)
                     }
                     if target == "overlay" {
                         guard let painted = try BrushEngine.paintLayer(stroke, canvasSize: doc.size) else { return (doc, nil, nil) }
                         let id = UUID()
-                        next.layers.append(StickerLayer(resourceID: id, name: L10n.text("纯色画笔"),
-                                                        center: CGPoint(x: painted.rect.midX, y: painted.rect.midY), size: painted.rect.size))
+                        let shape = stroke.shape ?? .freehand
+                        next.numberBrushElements()
+                        let number = next.nextBrushElementNumber(for: shape)
+                        var layer = StickerLayer(resourceID: id, name: "\(shape.elementTitle) \(number)",
+                                                 center: CGPoint(x: painted.rect.midX, y: painted.rect.midY), size: painted.rect.size)
+                        layer.brushShape = shape
+                        layer.brushElementNumber = number
+                        next.layers.append(layer)
                         return (next, id, painted.image)
                     }
                     let raster = try target == "canvas" ? (committedPreview ?? DocumentEngine.render(doc,resources:assets)) : DocumentEngine.renderBase(doc,resources:assets)
-                    let id=UUID(); next.baseResourceID=id; next.originalSize=doc.size; next.operations=[]; next.baseStrokes=[stroke]
+                    let id=UUID(); next.baseResourceID=id; next.originalSize=doc.size; next.operations=[]; next.baseStrokes=[stroke]; next.adjustments=nil
                     if target == "canvas" { next.layers=[]; next.activeLayerID = nil }
                     return (next,id,raster)
                 }.value
@@ -79,53 +91,63 @@ extension EditorModel {
 }
 struct BrushToolControls: View {
     @EnvironmentObject private var languageSettings: AppLanguageSettings
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var model: EditorModel
     var body: some View {
         let _ = languageSettings.language
-        VStack(alignment: .leading, spacing: 14) {
-            if model.brushTool == .solid {
-                GlassSlidingPicker(selection: $model.brushShape,
-                                   options: BrushShape.allCases.map { ($0.title, $0) },
-                                   symbols: BrushShape.allCases.map(\.icon))
-                    .accessibilityLabel(L10n.text("画笔形状"))
-                if model.brushShape == .rectangle {
-                    NumericValueControl(title: L10n.text("圆角半径"), value: $model.brushCornerRadius, range: 0...1000, step: 5)
-                } else if model.brushShape == .ellipse {
-                    Toggle(L10n.text("正圆"), isOn: $model.brushCircle).toggleStyle(GlassToggleStyle())
+        Group {
+            if model.selectedBrushElement != nil {
+                LayerInspector(model: model, showsInsertionButtons: false, fullWidthActions: true,
+                               filter: .brush, showsLayerActions: false)
+            } else {
+                VStack(alignment: .leading, spacing: 14) {
+                    if model.brushTool == .solid {
+                        GlassSlidingPicker(selection: $model.brushShape,
+                                           options: BrushShape.allCases.map { ($0.title, $0) },
+                                           symbols: BrushShape.allCases.map(\.icon))
+                            .accessibilityLabel(L10n.text("画笔形状"))
+                        if model.brushShape == .rectangle {
+                            NumericValueControl(title: L10n.text("圆角半径"), value: $model.brushCornerRadius, range: 0...1000, step: 5)
+                        } else if model.brushShape == .ellipse {
+                            Toggle(L10n.text("正圆"), isOn: $model.brushCircle).toggleStyle(GlassToggleStyle())
+                        }
+                    }
+                    if model.brushTool == .pixelate || model.brushTool == .blur {
+                        MosaicEffectSlider(value: effectBinding)
+                        .accessibilityElement(children: .contain)
+                        .accessibilityLabel(L10n.text("马赛克视觉效果"))
+                        .accessibilityValue(model.brushTool == .pixelate ? L10n.text("Pixel") : L10n.text("Gaussian"))
+                    }
+                    if model.brushTool == .solid {
+                        EasyPicColorButton(title: L10n.text("画笔颜色"), selection: $model.brushColor)
+                    }
+                    HStack(spacing: 8) {
+                        Text(L10n.text("直径"))
+                        Spacer(minLength: 0)
+                        Circle()
+                            .fill(model.brushTool == .solid ? Color(cgColor: model.brushColor.cgColor).opacity(model.brushOpacity) : Color.primary.opacity(0.1))
+                            .overlay(Circle().strokeBorder(.primary.opacity(0.65), lineWidth: 1))
+                            .frame(width: model.brushPreviewDiameter, height: model.brushPreviewDiameter)
+                            .glassSurface(.control, radius: model.brushPreviewDiameter / 2)
+                            .quickHelp(L10n.text("按画布缩放预览直径；超大笔刷适配面板显示。"))
+                            .accessibilityLabel(L10n.text("画笔直径预览"))
+                            .accessibilityValue(L10n.text("{0} 像素", String(describing: Int(model.brushSize))))
+                    }
+                    GlassSlider(value: $model.brushSize, in: EditorModel.brushSizeRange).accessibilityLabel(L10n.text("画笔直径"))
+                    Text(L10n.text("硬度 {0}%", String(describing: Int(model.brushHardness*100)))); GlassSlider(value:$model.brushHardness,in:0...1)
+                    Text(L10n.text("透明度 {0}%", String(describing: Int(model.brushOpacity*100)))); GlassSlider(value:$model.brushOpacity,in:0...1)
+                    if model.brushTool == .pixelate || model.brushTool == .blur { Text(L10n.text("强度 {0}", String(describing: Int(model.brushStrength)))); GlassSlider(value:$model.brushStrength,in:1...100) }
+                    if [.pixelate,.blur].contains(model.brushTool) || (model.brushTool == .solid && model.brushShape == .freehand) {
+                        Toggle(L10n.text("矩形选区"),isOn:$model.brushRectangle).toggleStyle(GlassToggleStyle())
+                    }
+                    if model.brushTool == .clone {
+                        Button(L10n.text("重新取样")) { model.cloneSource=nil }.quickHelp(L10n.text("先点击画布设置取样点，再拖动绘制；Option 点击重新取样。"))
+                    }
                 }
             }
-            if model.brushTool == .pixelate || model.brushTool == .blur {
-                MosaicEffectSlider(value: effectBinding)
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel(L10n.text("马赛克视觉效果"))
-                .accessibilityValue(model.brushTool == .pixelate ? L10n.text("Pixel") : L10n.text("Gaussian"))
-            }
-            HStack(spacing: 8) {
-                Text(L10n.text("直径"))
-                Spacer(minLength: 0)
-                Circle()
-                    .fill(model.brushTool == .solid ? Color(cgColor: model.brushColor.cgColor).opacity(model.brushOpacity) : Color.primary.opacity(0.1))
-                    .overlay(Circle().strokeBorder(.primary.opacity(0.65), lineWidth: 1))
-                    .frame(width: model.brushPreviewDiameter, height: model.brushPreviewDiameter)
-                    .glassSurface(.control, radius: model.brushPreviewDiameter / 2)
-                    .quickHelp(L10n.text("按画布缩放预览直径；超大笔刷适配面板显示。"))
-                    .accessibilityLabel(L10n.text("画笔直径预览"))
-                    .accessibilityValue(L10n.text("{0} 像素", String(describing: Int(model.brushSize))))
-            }
-            GlassSlider(value: $model.brushSize, in: EditorModel.brushSizeRange).accessibilityLabel(L10n.text("画笔直径"))
-            Text(L10n.text("硬度 {0}%", String(describing: Int(model.brushHardness*100)))); GlassSlider(value:$model.brushHardness,in:0...1)
-            Text(L10n.text("透明度 {0}%", String(describing: Int(model.brushOpacity*100)))); GlassSlider(value:$model.brushOpacity,in:0...1)
-            if model.brushTool == .pixelate || model.brushTool == .blur { Text(L10n.text("强度 {0}", String(describing: Int(model.brushStrength)))); GlassSlider(value:$model.brushStrength,in:1...100) }
-            if model.brushTool == .solid {
-                EasyPicColorButton(title: L10n.text("画笔颜色"), selection: $model.brushColor)
-            }
-            if [.pixelate,.blur].contains(model.brushTool) || (model.brushTool == .solid && model.brushShape == .freehand) {
-                Toggle(L10n.text("矩形选区"),isOn:$model.brushRectangle).toggleStyle(GlassToggleStyle())
-            }
-            if model.brushTool == .clone {
-                Button(L10n.text("重新取样")) { model.cloneSource=nil }.quickHelp(L10n.text("先点击画布设置取样点，再拖动绘制；Option 点击重新取样。"))
-            }
-        }.disabled(model.busy)
+        }
+        .animation(EasyPicMotion.panelAnimation(reduced: reduceMotion), value: model.selectedBrushElement?.id)
+        .disabled(model.busy)
     }
     private var effectBinding: Binding<Double> {
         Binding(

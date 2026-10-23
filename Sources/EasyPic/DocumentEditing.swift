@@ -124,7 +124,7 @@ extension EditorModel {
         latestInteractionID = nil
         busy = true
         let assets = resources, doc = next.document
-        let cachedBase = document?.operations == doc.operations && document?.baseResourceID == doc.baseResourceID && document?.baseStrokes == doc.baseStrokes ? baseImage : nil
+        let cachedBase = document?.operations == doc.operations && document?.baseResourceID == doc.baseResourceID && document?.baseStrokes == doc.baseStrokes && document?.adjustments == doc.adjustments ? baseImage : nil
         previewTask = Task {
             var succeeded = false
             do {
@@ -133,6 +133,7 @@ extension EditorModel {
                 guard renderRevision == revision else { return }
                 rotationTransition = nil
                 documentHistory = next; baseImage = base; image = base; documentPreview = preview
+                clearAdjustmentDraft()
                 draftLayer = nil; visualTraceID = trace
                 InteractionMetrics.shared.mark(trace, "PreviewPublished")
                 if !doc.layers.contains(where: { $0.id == selectedLayerID }) { selectedLayerID = nil }
@@ -145,11 +146,15 @@ extension EditorModel {
                 self.error = error.localizedDescription
             }
             guard renderRevision == revision else { return }
-            if !succeeded { draftLayer = nil; rotationTransition = nil }
+            if !succeeded {
+                clearAdjustmentDraft()
+                draftLayer = layerReorderPreview != nil ? historyPresentation?.textLayer : nil
+                rotationTransition = nil; layerReorderPreview = nil
+            }
             previewTask = nil
             busy = false
             let continuation = pendingEditorAction; pendingEditorAction = nil
-            if succeeded { continuation?() }
+            if succeeded { continuation?() } else { historyPresentation = nil }
         }
     }
     func updateLayer(_ layer: StickerLayer, commit: Bool) {
@@ -178,11 +183,42 @@ extension EditorModel {
         resources = resources.filter { ids.contains($0.key) }
     }
 
+    func deleteElement(_ id: UUID) {
+        guard canPerformEditorActions, sidePanel == .edit,
+              document?.layers.contains(where: { $0.id == id }) == true || draftLayer?.id == id else { return }
+        let editing = textEditing && draftLayer?.id != id && draftLayer?.text?.isUnfinished == false ? draftLayer : nil
+        if let editing { historyPresentation = EditorHistoryPresentation(textLayer: editing, cropRect: nil) }
+        let resume: () -> Void = { [weak self] in
+            guard let self else { return }
+            if let editing, let saved = self.document?.layers.first(where: { $0.id == editing.id }),
+               self.sidePanel == .edit, self.activeEditorTool == .text {
+                self.selectedLayerID = saved.id; self.draftLayer = saved; self.textEditing = true
+            }
+            self.historyPresentation = nil
+        }
+        finishInlineText { [weak self] in
+            guard let self, var next = self.document else { return }
+            guard next.layers.contains(where: { $0.id == id }) else { resume(); return }
+            next.layers.removeAll { $0.id == id }
+            if self.selectedLayerID == id { self.selectedLayerID = nil }
+            self.pendingEditorAction = resume
+            self.commitDocument(next)
+        }
+        if error != nil { historyPresentation = nil }
+    }
     func layerAction(_ action: String) {
+        if action == "delete", let selectedLayerID { deleteElement(selectedLayerID); return }
         guard canUseLayers, var doc = document, let i = doc.layers.firstIndex(where: { $0.id == selectedLayerID }) else { return }
         switch action {
         case "delete": doc.layers.remove(at: i)
-        case "duplicate": var copy = doc.layers[i]; copy.id = UUID(); copy.center.x += 20; copy.center.y += 20; doc.layers.insert(copy, at: i + 1); selectedLayerID = copy.id
+        case "duplicate":
+            doc.numberBrushElements()
+            var copy = doc.layers[i]; copy.id = UUID(); copy.center.x += 20; copy.center.y += 20
+            if let shape = copy.brushElementShape {
+                let number = doc.nextBrushElementNumber(for: shape)
+                copy.brushElementNumber = number; copy.name = "\(shape.elementTitle) \(number)"
+            }
+            doc.layers.insert(copy, at: i + 1); selectedLayerID = copy.id
         case "top": let layer = doc.layers.remove(at: i); doc.layers.append(layer)
         case "bottom": let layer = doc.layers.remove(at: i); doc.layers.insert(layer, at: 0)
         case "visibility": doc.layers[i].visible.toggle()
@@ -220,6 +256,7 @@ extension EditorModel {
         }
     }
     func loadProject(_ url: URL) {
+        clearAdjustmentDraft()
         busy = true
         Task {
             do {

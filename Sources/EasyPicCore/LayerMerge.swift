@@ -57,7 +57,7 @@ extension DocumentEngine {
         var next = document
         if includesBase {
             next.baseResourceID = resourceID; next.originalSize = size
-            next.operations = []; next.baseStrokes = nil
+            next.operations = []; next.baseStrokes = nil; next.adjustments = nil
             if case .all = mode { next.layers = [] }
             else { next.layers.removeFirst() }
             next.activeLayerID = nil

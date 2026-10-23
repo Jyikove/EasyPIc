@@ -50,9 +50,10 @@ public struct LayerSpatialIndex {
         for y in y0...y1 { for x in x0...x1 { candidates.formUnion(cells[Cell(x: x, y: y)] ?? []) } }
         return candidates.filter { bounds[$0]!.intersects(rect) }.sorted()
     }
-    public func hit(_ point: CGPoint, layers: [StickerLayer]) -> StickerLayer? {
+    public func hit(_ point: CGPoint, layers: [StickerLayer], matching predicate: (StickerLayer) -> Bool = { _ in true }) -> StickerLayer? {
         query(CGRect(x: point.x - 0.001, y: point.y - 0.001, width: 0.002, height: 0.002))
-            .reversed().compactMap { layers.indices.contains($0) ? layers[$0] : nil }.first { $0.contains(point) }
+            .reversed().compactMap { layers.indices.contains($0) ? layers[$0] : nil }
+            .first { $0.visible && predicate($0) && $0.contains(point) }
     }
 }
 

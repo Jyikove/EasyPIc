@@ -37,11 +37,17 @@ extension EditorModel {
         if sidePanel == .edit { editorSession = EditorSessionSnapshot(self) }
     }
     var editorSessionHasChanges: Bool {
-        guard let session = editorSession, session.fileURL == fileURL else { return dirty || hasTextDraftChanges }
-        return document != session.history?.document || hasTextDraftChanges || liveHistory.edits != session.liveHistory.edits
+        guard let session = editorSession, session.fileURL == fileURL else { return dirty || hasTextDraftChanges || hasAdjustmentDraftChanges }
+        return document != session.history?.document || hasTextDraftChanges || hasAdjustmentDraftChanges || liveHistory.edits != session.liveHistory.edits
     }
     func requestEditorExit(then continuation: (() -> Void)? = nil, includingEarlierChanges: Bool = false) {
         guard canPerformEditorActions else { return }
+        if draftLayer?.text?.isUnfinished == true || document?.layers.contains(where: { $0.text?.isUnfinished == true }) == true {
+            finishInlineText { [weak self] in
+                self?.requestEditorExit(then: continuation, includingEarlierChanges: includingEarlierChanges)
+            }
+            return
+        }
         if cropping {
             finishCrop { [weak self] in
                 self?.requestEditorExit(then: continuation, includingEarlierChanges: includingEarlierChanges)
@@ -59,7 +65,8 @@ extension EditorModel {
     func cancelEditorExit() { confirmingEditorExit = false; pendingEditorExitAction = nil }
     func finishEditorExit() {
         let continuation = pendingEditorExitAction; pendingEditorExitAction = nil
-        confirmingEditorExit = false; editorSession = nil
+        clearAdjustmentDraft()
+        confirmingEditorExit = false; editorSession = nil; layerReorderPreview = nil
         previewTask?.cancel(); previewTask = nil; draftLayer = nil; textEditing = false
         cancelCrop(); cancelBrush(); activeEditorTool = nil; sidePanel = nil
         clearRecognition()

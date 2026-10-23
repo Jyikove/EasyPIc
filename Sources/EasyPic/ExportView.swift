@@ -30,7 +30,7 @@ struct ExportView: View {
     var body: some View {
         let _ = languageSettings.language
         VStack(alignment: .leading, spacing: 18) {
-            Label(L10n.text("另存为"), systemImage: "square.and.arrow.down.on.square")
+            Label(L10n.text("另存为"), functionIcon: "square.and.arrow.down.on.square")
                 .font(.title2.weight(.medium))
             HStack {
                 Text(L10n.text("格式"))
@@ -52,7 +52,7 @@ struct ExportView: View {
                     ExportPathBar(url: directory).frame(maxWidth: .infinity).frame(height: 30)
                         .padding(.leading, 6).glassSurface(.input, radius: 10)
                     Button(action: chooseDirectory) {
-                        Image(systemName: "folder.badge.gearshape").frame(width: 30, height: 30)
+                        FunctionIcon(systemName: "folder.badge.gearshape").frame(width: 30, height: 30)
                     }
                     .buttonStyle(GlassButtonStyle(radius: 10, horizontalPadding: 0, verticalPadding: 0))
                     .quickHelp(L10n.text("选择文件夹…")).accessibilityLabel(L10n.text("选择文件夹…"))
