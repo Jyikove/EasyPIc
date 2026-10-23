@@ -66,6 +66,16 @@
 	<array>
 		<dict>
 			<key>UTTypeIdentifier</key>
+			<string>local.jyikove.easypic.layer-order</string>
+			<key>UTTypeDescription</key>
+			<string>EasyPic Layer Order</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
 			<string>local.jyikove.easypic.project</string>
 			<key>UTTypeDescription</key>
 			<string>EasyPic Editable Project</string>

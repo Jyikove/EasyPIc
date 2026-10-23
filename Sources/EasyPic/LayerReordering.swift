@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import EasyPicCore
+import UniformTypeIdentifiers
 
 extension EditorModel {
     private func reorderedDocument(_ id: UUID, order: [UUID], filter: LayerInspectorFilter) -> EditorDocument? {
@@ -44,7 +45,19 @@ extension EditorModel {
 /// Native drag images follow the pointer; only row crossings publish a new order.
 /// Full-resolution composition runs once at drop, and cancellation restores the preview.
 @MainActor final class LayerListDragState: ObservableObject {
-    static let typeIdentifier = "local.jyikove.easypic.layer-order"
+    // SwiftUI resolves accepted identifiers to UTType when installing the drop
+    // destination. An undeclared string leaves a visible drag with no valid target.
+    static let contentType = UTType(exportedAs: "local.jyikove.easypic.layer-order", conformingTo: .data)
+    static let typeIdentifier = contentType.identifier
+    static func itemProvider(for id: UUID) -> NSItemProvider {
+        let provider = NSItemProvider()
+        let data = Data(id.uuidString.utf8)
+        provider.registerDataRepresentation(forTypeIdentifier: typeIdentifier, visibility: .ownProcess) { completion in
+            completion(data, nil)
+            return nil
+        }
+        return provider
+    }
     @Published private(set) var layerID: UUID?
     var visibleIDs = Set<UUID>()
     private var order: [UUID] = []
@@ -95,8 +108,12 @@ extension EditorModel {
     }
     private func tick() {
         let now = ProcessInfo.processInfo.systemUptime
-        if NSEvent.pressedMouseButtons & 1 == 0 {
-            if let releasedAt, now - releasedAt > 0.15 { cancel() }
+        // AppKit's cached button flags can change during native drag tracking.
+        let mouseDown = CGEventSource.buttonState(.combinedSessionState, button: .left) || NSEvent.pressedMouseButtons & 1 != 0
+        if !mouseDown {
+            // Native drag/drop completes asynchronously after mouse-up. Give the
+            // destination time to accept it before treating it as an outside drop.
+            if let releasedAt, now - releasedAt > 1 { cancel() }
             else if releasedAt == nil { releasedAt = now }
             return
         }
@@ -116,7 +133,7 @@ struct LayerElementDropDelegate: DropDelegate {
     let id: UUID
     let state: LayerListDragState
     func validateDrop(info: DropInfo) -> Bool {
-        MainActor.assumeIsolated { state.layerID != nil && info.hasItemsConforming(to: [LayerListDragState.typeIdentifier]) }
+        MainActor.assumeIsolated { state.layerID != nil && info.hasItemsConforming(to: [LayerListDragState.contentType]) }
     }
     func dropEntered(info: DropInfo) { MainActor.assumeIsolated { state.entered(id) } }
     func dropExited(info: DropInfo) { MainActor.assumeIsolated { state.exited(id) } }

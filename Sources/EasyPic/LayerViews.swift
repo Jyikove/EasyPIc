@@ -85,9 +85,9 @@ struct LayerElementList: View {
                             dragging.begin(layer.id, model: model, filter: filter) { id, anchor in
                                 proxy.scrollTo(id, anchor: anchor)
                             }
-                            return NSItemProvider(item: layer.id.uuidString as NSString, typeIdentifier: LayerListDragState.typeIdentifier)
+                            return LayerListDragState.itemProvider(for: layer.id)
                         }
-                        .onDrop(of: [LayerListDragState.typeIdentifier], delegate: LayerElementDropDelegate(id: layer.id, state: dragging))
+                        .onDrop(of: [LayerListDragState.contentType], delegate: LayerElementDropDelegate(id: layer.id, state: dragging))
                     }
                 }
                 .scrollTargetLayout()
