@@ -79,18 +79,26 @@ struct LayerElementList: View {
                         .accessibilityLabel(L10n.text("删除图层") + " " + title(for: layer))
                         .padding(.trailing, 5)
                         }
-                        .opacity(dragging.layerID == layer.id ? 0.3 : 1)
-                        .contentShape(.dragPreview, RoundedRectangle(cornerRadius: 8))
-                        .onDrag {
-                            dragging.begin(layer.id, model: model, filter: filter) { id, anchor in
-                                proxy.scrollTo(id, anchor: anchor)
+                        .overlay {
+                            LayerRowInputBridge { event in
+                                dragging.track(layer.id, event: event, model: model, filter: filter,
+                                               select: { select(layer) }, scroll: { id, anchor in
+                                    proxy.scrollTo(id, anchor: anchor)
+                                })
                             }
-                            return LayerListDragState.itemProvider(for: layer.id)
+                            .padding(.trailing, 29)
+                            .accessibilityHidden(true)
                         }
-                        .onDrop(of: [LayerListDragState.contentType], delegate: LayerElementDropDelegate(id: layer.id, state: dragging))
+                        .offset(y: dragging.rowOffset(layer.id))
+                        .zIndex(dragging.layerID == layer.id ? 1 : 0)
+                        .transaction { if dragging.layerID == layer.id { $0.animation = nil } }
                     }
                 }
                 .scrollTargetLayout()
+            }
+            .background(LayerListViewportBridge { dragging.viewport = $0 })
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, offset in
+                dragging.scrolled(to: offset)
             }
             .onScrollTargetVisibilityChange(idType: UUID.self) { dragging.visibleIDs = Set($0) }
         }
